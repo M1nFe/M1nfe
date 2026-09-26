@@ -1,0 +1,9 @@
+anthropic>=1.8
+jsonschema>=4.20
+openpyxl>=3.1
+pdfplumber>=0.11
+rich>=13.7
+# 샘플 PDF를 다시 만들 때만 필요 (scripts/make_sample_files.py)
+reportlab>=4.0
+# 테스트
+pytest>=8.0

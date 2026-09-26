@@ -1,0 +1,41 @@
+{
+  "_설명": "시연용 정답표. '검수자(사람)' 역할이 이 값을 알고 있다고 가정하고, AI 결과가 맞았는지 채점하는 데 쓴다. 실제 운영에서는 과거 수작업 결과로 만든 골든셋이 이 역할을 한다.",
+  "header_row": 4,
+  "header_map": {
+    "A": {"field_code": "ignore"},
+    "B": {"field_code": "model_code"},
+    "C": {"field_code": "product_name"},
+    "D": {"field_code": "device_price", "condition_key": "base"},
+    "E": {"field_code": "monthly_fee", "condition_key": "contract=24"},
+    "F": {"field_code": "subsidy_amount", "condition_key": "join=mnp"},
+    "G": {"field_code": "subsidy_amount", "condition_key": "join=chg"},
+    "H": {"field_code": "memo"}
+  },
+  "pdf_values": {
+    "퓨어워터 WP500 냉온": {"monthly_rental_fee": 36900, "mandatory_months": 60, "registration_fee": 100000},
+    "퓨어워터 WP500 냉정": {"monthly_rental_fee": 32900, "mandatory_months": 60, "registration_fee": 100000},
+    "클린에어 AC300": {"monthly_rental_fee": 25900, "mandatory_months": 36, "registration_fee": 0}
+  },
+  "matching": {
+    "갤S24 256 블랙": "P001",
+    "갤럭시S24 512 블랙": "P002",
+    "Galaxy S24+ 256GB (BK)": "P003",
+    "아이폰16 256 블랙": "P005",
+    "갤럭시 Z플립6 256 실버": "NEW",
+    "퓨어워터 WP500 냉온": "P010",
+    "퓨어워터 WP500 냉정": "P011",
+    "클린에어 AC300": "P012"
+  },
+  "notice": [
+    {"product_id": "P020", "change_type": "price_change", "new_value": 39000, "effective_from": "2026-11-01"},
+    {"product_id": "P021", "change_type": "discontinue"}
+  ],
+  "nlq": [
+    {"question": "이번 달에 지난달보다 월 렌탈료가 오른 가전 제품 알려줘",
+     "intent": "price_change_list", "params": {"category": "appliance", "direction": "up"}},
+    {"question": "A통신 번호이동 공시지원금이 30만원 이상인 단말 보여줘",
+     "intent": "price_lookup", "params": {"partner": "A통신", "field": "subsidy_amount", "condition": "join=mnp", "op": "gte", "amount": 300000}},
+    {"question": "이번 달 A통신 정산금 총액 계산해줘",
+     "intent": "unsupported", "params": {}}
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "_설명": "모의 응답 — 실제 Claude 호출 결과가 아닙니다. 응답 형식과 이후 코드 처리를 보여 주려고 사람이 작성했습니다. 실제 결과는 live 모드로 실행하면 recordings/에 녹화됩니다.",
+  "step_id": "a3_anomaly_explain",
+  "model": null,
+  "output": {
+    "items": [
+      {
+        "item_id": "a1",
+        "likely_cause": "unit_error",
+        "explanation_template_ko": "월정액이 {prev_value}에서 {new_value}로 바뀌어 자릿수가 하나 늘었습니다({change_pct}). 입력 과정의 단위·자릿수 오류로 보입니다.",
+        "check_points_ko": [
+          "A통신에 해당 요금제 월정액 원본 값을 재확인",
+          "같은 파일의 다른 월정액 값과 자릿수 비교"
+        ]
+      },
+      {
+        "item_id": "a2",
+        "likely_cause": "legit_policy_change",
+        "explanation_template_ko": "번호이동 공시지원금이 {prev_value}에서 {new_value}로 줄었습니다({change_pct}). 원문 비고에 지원금 조정이 적혀 있어 정책 변경일 가능성이 있습니다.",
+        "check_points_ko": [
+          "A통신 10월 지원금 조정 공지 확인",
+          "적용 시작일이 10월 1일인지 확인"
+        ]
+      }
+    ]
+  }
+}

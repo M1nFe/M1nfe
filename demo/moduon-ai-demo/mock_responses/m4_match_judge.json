@@ -1,0 +1,75 @@
+{
+  "_설명": "모의 응답 — 실제 Claude 호출 결과가 아닙니다. 응답 형식과 이후 코드 처리를 보여 주려고 사람이 작성했습니다. 실제 결과는 live 모드로 실행하면 recordings/에 녹화됩니다.",
+  "step_id": "m4_match_judge",
+  "model": null,
+  "output": {
+    "results": [
+      {
+        "mention_key": "m01",
+        "decision": "match",
+        "candidate_key": "c1",
+        "extracted_attributes": {
+          "storage": "512",
+          "color": "블랙",
+          "variant": null
+        },
+        "reason_ko": "모델코드 SM-S921N과 용량 512, 색상 블랙이 c1과 모두 같음"
+      },
+      {
+        "mention_key": "m02",
+        "decision": "match",
+        "candidate_key": "c1",
+        "extracted_attributes": {
+          "storage": "256",
+          "color": "블랙",
+          "variant": null
+        },
+        "reason_ko": "아이폰 16, 256, 블랙이 c1과 같고 c2는 128GB라 다름"
+      },
+      {
+        "mention_key": "m03",
+        "decision": "new_product_candidate",
+        "candidate_key": null,
+        "extracted_attributes": {
+          "storage": "256",
+          "color": "실버",
+          "variant": null
+        },
+        "reason_ko": "Z플립6은 후보(갤럭시 S24 계열, 아이폰)와 다른 기종이며 모델코드 SM-F741N도 후보에 없음"
+      },
+      {
+        "mention_key": "m04",
+        "decision": "match",
+        "candidate_key": "c1",
+        "extracted_attributes": {
+          "storage": null,
+          "color": null,
+          "variant": "냉온"
+        },
+        "reason_ko": "WP500 냉온은 c1 냉온정과 같은 옵션이며 c2는 냉정이라 다름"
+      },
+      {
+        "mention_key": "m05",
+        "decision": "match",
+        "candidate_key": "c1",
+        "extracted_attributes": {
+          "storage": null,
+          "color": null,
+          "variant": "냉정"
+        },
+        "reason_ko": "WP500 냉정은 c1 냉정 모델과 옵션이 같음"
+      },
+      {
+        "mention_key": "m06",
+        "decision": "match",
+        "candidate_key": "c1",
+        "extracted_attributes": {
+          "storage": null,
+          "color": null,
+          "variant": null
+        },
+        "reason_ko": "클린에어 AC300은 c1 공기청정기 AC-300과 같은 제품명·모델 표기"
+      }
+    ]
+  }
+}

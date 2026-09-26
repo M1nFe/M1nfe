@@ -1,0 +1,32 @@
+{
+  "_설명": "모의 응답 — 실제 Claude 호출 결과가 아닙니다. 응답 형식과 이후 코드 처리를 보여 주려고 사람이 작성했습니다. 실제 결과는 live 모드로 실행하면 recordings/에 녹화됩니다.",
+  "step_id": "n1_notice_parse",
+  "model": null,
+  "output": {
+    "changes": [
+      {
+        "product_ref_raw": "프리미엄 360",
+        "change_type": "price_change",
+        "field": "monthly_installment",
+        "old_value_text": "33,000원",
+        "new_value_text": "39,000원",
+        "new_value_number": 39000,
+        "effective_from_text": "2026년 11월 1일 가입분부터",
+        "evidence_text": "2026년 11월 1일 가입분부터 「프리미엄 360」 상품의 월 납입금이 33,000원에서 39,000원으로 변경됩니다."
+      },
+      {
+        "product_ref_raw": "스탠다드 240",
+        "change_type": "discontinue",
+        "field": "none",
+        "old_value_text": null,
+        "new_value_text": null,
+        "new_value_number": null,
+        "effective_from_text": "2026년 10월 31일 가입분을 끝으로",
+        "evidence_text": "또한 「스탠다드 240」 상품은 2026년 10월 31일 가입분을 끝으로 신규 판매가 종료됩니다."
+      }
+    ],
+    "followup_documents": [
+      "변경 내용이 반영된 정책표 원본은 10월 20일까지 별도로 보내 드리겠습니다."
+    ]
+  }
+}

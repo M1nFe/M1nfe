@@ -5,6 +5,8 @@
 
 상세 설계(DDL, JSON Schema, 상태 전이, 권한, 화면별 설계, 비용 계산 근거)는 [`ai-integration-plan.md`](./ai-integration-plan.md)에 있습니다. 이 문서는 그 요약입니다.
 
+AI가 하는 일을 화면 없이 직접 돌려 보는 시연 프로그램은 [`demo/moduon-ai-demo`](../../demo/moduon-ai-demo/README.md)에 있습니다.
+
 ---
 
 ## 0. 전제

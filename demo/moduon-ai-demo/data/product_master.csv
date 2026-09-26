@@ -1,0 +1,11 @@
+id,category,vendor,name,model_code,storage_gb,color,variant
+P001,telecom,삼성,갤럭시 S24 256GB 블랙,SM-S921N,256,black,
+P002,telecom,삼성,갤럭시 S24 512GB 블랙,SM-S921N,512,black,
+P003,telecom,삼성,갤럭시 S24+ 256GB 블랙,SM-S926N,256,black,
+P004,telecom,애플,아이폰 16 128GB 블랙,,128,black,
+P005,telecom,애플,아이폰 16 256GB 블랙,,256,black,
+P010,appliance,퓨어워터,퓨어워터 정수기 WP-500 냉온정,WP-500H,,,냉온정
+P011,appliance,퓨어워터,퓨어워터 정수기 WP-500 냉정,WP-500C,,,냉정
+P012,appliance,클린에어,클린에어 공기청정기 AC-300,AC-300,,,
+P020,funeral,B상조,B상조 프리미엄 360,,,,
+P021,funeral,B상조,B상조 스탠다드 240,,,,

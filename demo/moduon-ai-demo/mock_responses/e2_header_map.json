@@ -1,0 +1,69 @@
+{
+  "_설명": "모의 응답 — 실제 Claude 호출 결과가 아닙니다. 응답 형식과 이후 코드 처리를 보여 주려고 사람이 작성했습니다. 실제 결과는 live 모드로 실행하면 recordings/에 녹화됩니다.",
+  "step_id": "e2_header_map",
+  "model": null,
+  "output": {
+    "header_row": 4,
+    "mappings": [
+      {
+        "col": "A",
+        "source_header": "No",
+        "field_code": "ignore",
+        "unit": "none",
+        "condition_phrase": null
+      },
+      {
+        "col": "B",
+        "source_header": "모델명",
+        "field_code": "model_code",
+        "unit": "none",
+        "condition_phrase": null
+      },
+      {
+        "col": "C",
+        "source_header": "펫네임",
+        "field_code": "product_name",
+        "unit": "none",
+        "condition_phrase": null
+      },
+      {
+        "col": "D",
+        "source_header": "출고가",
+        "field_code": "device_price",
+        "unit": "KRW",
+        "condition_phrase": null
+      },
+      {
+        "col": "E",
+        "source_header": "월정액(24개월약정)",
+        "field_code": "monthly_fee",
+        "unit": "KRW",
+        "condition_phrase": "24개월약정"
+      },
+      {
+        "col": "F",
+        "source_header": "공시지원금(번호이동)",
+        "field_code": "subsidy_amount",
+        "unit": "KRW",
+        "condition_phrase": "번호이동"
+      },
+      {
+        "col": "G",
+        "source_header": "공시지원금(기기변경)",
+        "field_code": "subsidy_amount",
+        "unit": "KRW",
+        "condition_phrase": "기기변경"
+      },
+      {
+        "col": "H",
+        "source_header": "비고",
+        "field_code": "memo",
+        "unit": "none",
+        "condition_phrase": null
+      }
+    ],
+    "unmapped_notes": [
+      "B열 '모델명'은 값이 SM-S921N 같은 제조사 코드라 model_code로, C열 '펫네임'을 상품명으로 봄"
+    ]
+  }
+}

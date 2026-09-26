@@ -1,0 +1,18 @@
+{
+  "_설명": "모의 응답 — 실제 Claude 호출 결과가 아닙니다. 응답 형식과 이후 코드 처리를 보여 주려고 사람이 작성했습니다. 실제 결과는 live 모드로 실행하면 recordings/에 녹화됩니다.",
+  "step_id": "q2_nlq",
+  "model": null,
+  "output": {
+    "intent": "price_lookup",
+    "params": {
+      "partner": "A통신",
+      "category": "telecom",
+      "field": "subsidy_amount",
+      "condition": "join=mnp",
+      "op": "gte",
+      "amount": 300000,
+      "direction": null
+    },
+    "unsupported_reason": null
+  }
+}
