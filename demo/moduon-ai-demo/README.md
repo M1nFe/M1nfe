@@ -9,7 +9,7 @@
 
 ## 1. AI가 하는 일 (정확히)
 
-시연에서 Claude를 부르는 곳은 아래 6가지, 호출은 모두 8번입니다. 호출은 전부 `moduon_demo/llm.py` 한 곳을 거칩니다. AI의 출력 형식은 JSON Schema로 고정되어 있어서, 정해진 칸 말고 다른 것은 돌려줄 수 없습니다.
+시연에서 AI(Claude 또는 Ollama 로컬 모델)를 부르는 곳은 아래 6가지, 호출은 모두 8번입니다. 호출은 전부 `moduon_demo/llm.py` 한 곳을 거칩니다. AI의 출력 형식은 JSON Schema로 고정되어 있어서, 정해진 칸 말고 다른 것은 돌려줄 수 없습니다.
 
 | # | 기능 | AI에게 주는 것 | AI가 돌려주는 것 | AI 다음에 코드가 하는 일 | AI가 **하지 않는** 일 |
 |---|---|---|---|---|---|
@@ -35,6 +35,42 @@ AI 결과는 모두 `staging_*`(검수 전) 테이블까지만 갑니다.
 
 ## 3. 실행
 
+### 가장 먼저: 무료 오픈소스 모델(Ollama)로 돌리기 — API 키 불필요
+
+[Ollama](https://ollama.com)는 오픈소스 모델(Qwen, Gemma, Llama 등)을 내 PC에서 돌리는 프로그램입니다. 인터넷으로 데이터를 보내지 않고, API 비용이 없습니다.
+
+```bash
+# 1) Ollama 설치 (macOS) — 또는 ollama.com에서 앱을 받아 설치
+brew install ollama
+ollama serve                    # 앱으로 설치했다면 앱이 켜져 있으면 됨(이 줄 생략)
+
+# 2) 모델 받기 (새 터미널 창에서) — qwen2.5:7b는 약 4.7GB
+ollama pull qwen2.5:7b
+
+# 3) 시연 실행
+cd demo/moduon-ai-demo
+./run.sh --provider ollama                    # 기본 모델 qwen2.5:7b
+./run.sh --provider ollama --pause            # 발표용: 단계마다 Enter
+./run.sh --provider ollama --model qwen2.5:3b # 가벼운 모델
+```
+
+| PC 메모리(대략) | 추천 모델 | 비고 |
+|---|---|---|
+| 8GB | `qwen2.5:3b` | 가볍지만 정확도가 낮을 수 있음 |
+| 16GB 이상 | `qwen2.5:7b` (기본) | 한국어와 JSON 출력이 무난함 |
+| 32GB 이상 | `qwen2.5:14b`, `gemma3:12b` | 더 정확하지만 느림 |
+
+- **PDF는 텍스트로 보냅니다.** 로컬 모델은 PDF를 직접 읽지 못해서, 코드가 PDF에서 뽑은 텍스트를 보냅니다. 원문 대조 검증은 똑같이 합니다.
+- **출력 형식을 강제합니다.** Ollama의 구조화 출력(`format`에 JSON Schema)을 씁니다. 형식이 어긋나면 오류 내용을 알려 주고 한 번 더 요청합니다.
+- **정확도는 Claude보다 낮을 수 있습니다.** 작은 로컬 모델은 틀릴 수 있지만, 틀린 값은 코드 검증(원문·셀·숫자 대조)과 정답 대조에서 드러납니다. 이 차이를 보여 주는 것도 시연의 일부입니다.
+- **로컬 모델끼리 비교:** `./run.sh compare --models ollama:qwen2.5:3b ollama:qwen2.5:7b`. API 키를 넣으면 `claude-haiku-4-5`와도 비교할 수 있습니다.
+- **Ollama가 다른 주소에서 돌 때:** `--base-url http://주소:11434` 또는 `OLLAMA_HOST` 환경변수를 씁니다.
+- **자주 나오는 안내 메시지**
+  - "Ollama 서버에 연결할 수 없습니다" → Ollama 앱을 켜거나 `ollama serve`를 실행합니다.
+  - "모델이 없습니다" → 안내된 `ollama pull …` 명령을 실행합니다.
+
+### 공통
+
 ```bash
 cd demo/moduon-ai-demo
 ./run.sh                      # 처음에 .venv를 만들고 패키지 설치. 이후 자동 모드로 시연
@@ -46,18 +82,18 @@ cd demo/moduon-ai-demo
 
 | 모드 | 명령 | 설명 |
 |---|---|---|
-| **live** | `ANTHROPIC_API_KEY=... ./run.sh --mode live` | 실제 Claude 호출. 응답은 `recordings/<모델>/`에 녹화됩니다. 1회 실행에 8번 호출하고, 끝나면 실제 토큰·시간·비용이 표시됩니다. |
+| **live** | `./run.sh --provider ollama` 또는 `ANTHROPIC_API_KEY=... ./run.sh --mode live` | 실제 AI 호출(Ollama 로컬 모델 또는 Claude). 응답은 `recordings/<모델>/`에 녹화됩니다. 1회 실행에 8번 호출하고, 끝나면 실제 토큰·시간·비용이 표시됩니다. |
 | **replay** | `./run.sh --mode replay` | 녹화된 **실제 응답**을 재생합니다. 키 없이, 인터넷 없이 시연할 때 씁니다. |
 | **mock** | `./run.sh --mode mock` | 사람이 미리 써 둔 **모의 응답**입니다. 실제 AI 결과가 아니며 화면에 계속 그렇게 표시됩니다. 코드 검증, DB 권한, 계산은 실제로 실행됩니다. |
 
-모드를 지정하지 않으면 API 키가 있을 때 live, 없으면 녹화본(replay), 녹화본도 없으면 mock으로 자동 선택합니다.
+모드를 지정하지 않으면 `--provider ollama`는 항상 live입니다. Claude는 API 키가 있을 때 live, 없으면 녹화본(replay), 녹화본도 없으면 mock으로 자동 선택합니다.
 
 - **권장 순서:** 시연 전에 live로 한 번 실행해 녹화합니다. 발표 때는 `--mode replay --pause`로 진행합니다.
 - **결과 파일:** 실행이 끝나면 `output/`에 두 파일이 생깁니다.
   - `demo_report_<모델>_<모드>.md`: AI에게 보낸 원문(시스템 프롬프트, 보낸 내용, JSON Schema)과 응답 전체
   - `demo_summary_<모델>_<모드>.json`: AI가 한 일, 정답 대조, 토큰·시간·비용, DB 결과 요약. OpenClaw 같은 에이전트가 읽고 보고하는 용도입니다.
 
-### 모델 — 기본은 Haiku 4.5
+### Claude 모델 — 기본은 Haiku 4.5
 
 | 모델 | 옵션 | 단가(입력/출력, 1M 토큰) | 추론 설정 |
 |---|---|---|---|
@@ -146,7 +182,7 @@ run_demo.py                 실행기 (--mode, --model, --quiet)
 compare_models.py           모델 비교
 openclaw-skills/            OpenClaw 스킬(SKILL.md) + 설정 예시
 moduon_demo/
-  llm.py                    Claude 호출은 전부 여기 (모델별 설정, live / replay / mock, 녹화, 비용)
+  llm.py                    AI 호출은 전부 여기 (Claude·Ollama, 모델별 설정, live / replay / mock, 녹화, 비용)
   ai/                       ← AI를 부르는 코드: 시스템 프롬프트 + 출력 JSON Schema
     header_map.py  extract_doc.py  match_judge.py  anomaly_explain.py  notice_parse.py  nlq_parse.py
   rules/                    ← AI 없음: 파싱·정규화·검증·매칭 규칙·이상 규칙·고정 조회
@@ -157,5 +193,5 @@ moduon_demo/
 data/                       가상 샘플(엑셀·PDF·메일), 상품 마스터, 9월 확정 단가, 정답표
 mock_responses/             모의 응답 (실제 AI 아님)
 recordings/<모델>/           live 실행 시 실제 응답 녹화본
-tests/                      규칙·방화벽·계산·live 호출 경로(가짜 HTTP)·전체 파이프라인(mock)
+tests/                      규칙·방화벽·계산·Claude 호출 경로(가짜 HTTP)·Ollama 경로(가짜 서버)·전체 파이프라인
 ```

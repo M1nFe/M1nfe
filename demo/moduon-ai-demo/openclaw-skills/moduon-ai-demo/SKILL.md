@@ -25,7 +25,8 @@ DEMO="${MODUON_DEMO_DIR:-{baseDir}/../..}"
 
 | 요청 | 명령 | 비용 |
 |---|---|---|
-| 실제 AI로 시연(기본 모델 Haiku 4.5) | `bash "$DEMO/run.sh" --mode live --quiet` | API 과금(1회 8번 호출) |
+| 무료 로컬 모델로 시연(Ollama, 기본 qwen2.5:7b) | `bash "$DEMO/run.sh" --provider ollama --quiet` | 없음(내 PC에서 실행) |
+| 실제 Claude로 시연(기본 모델 Haiku 4.5) | `bash "$DEMO/run.sh" --mode live --quiet` | API 과금(1회 8번 호출) |
 | 다른 모델로 시연 | `bash "$DEMO/run.sh" --mode live --model claude-opus-5 --quiet` | API 과금 |
 | 녹화본 재생(키 불필요) | `bash "$DEMO/run.sh" --mode replay --quiet` | 없음 |
 | 모의 실행(실제 AI 아님) | `bash "$DEMO/run.sh" --mode mock --quiet` | 없음 |
@@ -33,6 +34,7 @@ DEMO="${MODUON_DEMO_DIR:-{baseDir}/../..}"
 | 테스트 | `bash "$DEMO/run.sh" test` | 없음 |
 
 - `--mode live`와 `compare`는 `ANTHROPIC_API_KEY`가 필요하고 돈이 든다. 사용자가 실제 실행이나 비교를 요청했을 때만 쓴다.
+- "무료로", "로컬로", "오픈소스 모델로", "Ollama로"라는 요청이면 `--provider ollama`를 쓴다. Ollama가 꺼져 있거나 모델이 없으면 실패 메시지에 나온 명령(`ollama serve`, `ollama pull …`)을 사용자에게 전달한다.
 - 모드를 말하지 않았으면 `--mode`를 빼고 실행한다. 키가 있으면 live, 없으면 녹화본, 녹화본도 없으면 mock으로 자동 선택된다.
 - 실행이 실패하면 stderr 마지막 줄(예: `AI 호출 실패: …`)을 그대로 전달한다. API 키 값은 절대 출력하지 않는다.
 

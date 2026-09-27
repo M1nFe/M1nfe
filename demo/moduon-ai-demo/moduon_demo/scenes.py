@@ -20,7 +20,6 @@ from openpyxl.utils import get_column_letter
 from .ai import anomaly_explain, extract_doc, header_map, match_judge, nlq_parse, notice_parse
 from .calc import engine as calc_engine
 from .calc import formulas
-from .llm import MODE_LABEL
 from .rules import anomaly as anomaly_rules
 from .rules import queries, verify
 from .rules.conditions import CONDITION_LABELS, UnknownCondition, resolve
@@ -86,12 +85,12 @@ ARG_KO = {"monthly_fee": "월정액", "device_price": "출고가", "subsidy": "�
 def scene0_setup(ctx: Ctx):
     rep, st = ctx.rep, ctx.store
     rep.title("모두온 AI 시연 — AI가 정확히 무엇을 하는가",
-              f"모드: {MODE_LABEL[ctx.llm.mode]} · 모델: {ctx.llm.model} · 기준 월: {MONTH} · 모든 데이터는 가상 샘플")
+              f"모드: {ctx.llm.mode_label} · 모델: {ctx.llm.model} · 기준 월: {MONTH} · 모든 데이터는 가상 샘플")
     if ctx.mock:
         rep.warn("모의(mock) 모드입니다. AI 응답은 사람이 미리 써 둔 예시이며 실제 Claude 결과가 아닙니다.\n"
-                 "코드 검증·DB 권한·계산은 실제로 실행됩니다. 실제 AI 결과는 ANTHROPIC_API_KEY를 넣고 실행하세요.")
+                 "코드 검증·DB 권한·계산은 실제로 실행됩니다. 실제 AI 결과는 --mode live로 실행하세요(Claude 키 또는 Ollama).")
     rep.table("등장 인물", ["표시", "역할"], [
-        ["🤖 AI", "Claude. 읽기·고르기·분류·설명만 한다. 결과는 언제나 '제안'이며 staging(검수 전)에만 저장된다"],
+        ["🤖 AI", f"{ctx.llm.display_name}. 읽기·고르기·분류·설명만 한다. 결과는 언제나 '제안'이며 staging(검수 전)에만 저장된다"],
         ["⚙️ 코드", "규칙·검증·저장을 맡는 결정론 코드. AI 출력을 원문과 대조한다"],
         ["🙋 사람", "검수자. 확정(canonical) 권한은 사람에게만 있다 (이 시연에서는 정답표를 아는 검수자 역할로 시뮬레이션)"],
         ["🗄️ DB", "raw(원본) → staging(검수 전) → canonical(확정) → calc(계산 결과)"],
@@ -740,13 +739,15 @@ def scene8_summary(ctx: Ctx):
     tout = sum(c.output_tokens for c in calls)
     cost = sum(c.cost_usd for c in calls)
     secs = sum(c.duration_s for c in calls)
-    rep.table(f"AI 호출 내역 (모델 {llm.model})",
-              ["단계", "내용", "모드", "추론 설정", "입력 토큰", "출력 토큰", "시간(초)", "비용(USD, 추정)"],
-              [[c.step_id, c.title, MODE_LABEL[c.mode], c.reasoning, f"{c.input_tokens:,}", f"{c.output_tokens:,}",
+    rep.table(f"AI 호출 내역 — {llm.mode_label} · 모델 {llm.model}",
+              ["단계", "내용", "추론 설정", "입력 토큰", "출력 토큰", "시간(초)", "비용(USD, 추정)"],
+              [[c.step_id, c.title, c.reasoning, f"{c.input_tokens:,}", f"{c.output_tokens:,}",
                 f"{c.duration_s:.1f}", f"{c.cost_usd:.4f}"] for c in calls]
-              + [["합계", f"{len(calls)}회", "", "", f"{tin:,}", f"{tout:,}", f"{secs:.1f}", f"{cost:.4f}"]])
+              + [["합계", f"{len(calls)}회", "", f"{tin:,}", f"{tout:,}", f"{secs:.1f}", f"{cost:.4f}"]])
     if ctx.mock:
         rep.note("모의 모드라 토큰·시간·비용은 0으로 표시된다")
+    elif llm.provider == "ollama":
+        rep.note("로컬 모델이라 API 비용은 0이다(PC 전기·장비 비용은 별도). 시간은 PC 성능에 따라 크게 달라진다")
     n_can = st.one("select count(*) n from canonical_price where month=?", (MONTH,))["n"]
     n_ai = st.one("select count(*) n from canonical_price where month=? and source like '%AI 추출%'", (MONTH,))["n"]
     n_edit = st.one("select count(*) n from staging_record where human_edited=1")["n"]

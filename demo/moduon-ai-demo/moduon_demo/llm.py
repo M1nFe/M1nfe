@@ -1,22 +1,33 @@
-"""Claude 호출은 전부 이 모듈 한 곳을 거친다.
+"""AI 호출은 전부 이 모듈 한 곳을 거친다.
+
+두 가지 제공자(provider):
+- anthropic : Claude API (ANTHROPIC_API_KEY 필요, 기본 모델 claude-haiku-4-5)
+- ollama    : 내 PC에서 돌리는 오픈소스 모델 (키 불필요, 기본 모델 qwen2.5:7b)
 
 세 가지 모드:
-- live   : 실제 Claude API 호출. 응답을 recordings/<모델>/ 에 녹화한다. (ANTHROPIC_API_KEY 필요)
-- replay : recordings/<모델>/ 에 녹화된 '실제 응답'을 다시 재생한다. (키 없이 시연 가능)
+- live   : 실제 AI 호출. 응답을 recordings/<모델>/ 에 녹화한다.
+- replay : recordings/<모델>/ 에 녹화된 '실제 응답'을 다시 재생한다. (키·인터넷 없이 시연 가능)
 - mock   : mock_responses/ 의 '모의 응답'을 쓴다. 실제 AI 호출이 아니며 화면에 그렇게 표시한다.
 """
 import base64
 import copy
 import datetime as dt
 import hashlib
+import io
 import json
+import os
+import re
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import jsonschema
 
 DEFAULT_MODEL = "claude-haiku-4-5"
+DEFAULT_OLLAMA_MODEL = "qwen2.5:7b"
+DEFAULT_MODELS = {"anthropic": DEFAULT_MODEL, "ollama": DEFAULT_OLLAMA_MODEL}
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 
@@ -38,10 +49,14 @@ MODELS = {
 BUDGET_BY_EFFORT = {"low": None, "medium": 2048, "high": 4096}
 
 MODE_LABEL = {
-    "live": "실제 Claude API 호출",
-    "replay": "녹화된 실제 Claude 응답 재생",
+    "live": "실제 AI 호출",
+    "replay": "녹화된 실제 AI 응답 재생",
     "mock": "모의 응답 — 실제 AI 호출 아님",
 }
+
+# Ollama 설정: 프롬프트가 잘리지 않게 컨텍스트를 넉넉히, 결과가 매번 같도록 temperature 0
+OLLAMA_OPTIONS = {"temperature": 0, "num_ctx": 8192, "num_predict": 4096}
+OLLAMA_TIMEOUT_S = 600          # CPU에서 도는 로컬 모델은 느릴 수 있다
 
 
 class AIError(Exception):
@@ -74,26 +89,77 @@ def _redact_blocks(content):
     return out
 
 
+def _pdf_text(b64: str) -> str:
+    """PDF(base64) → 페이지 표시가 붙은 텍스트. 로컬 텍스트 모델은 PDF를 직접 읽지 못하므로 코드가 텍스트를 뽑아 준다."""
+    import pdfplumber
+    with pdfplumber.open(io.BytesIO(base64.b64decode(b64))) as pdf:
+        return "\n".join(f"[페이지 {i}]\n{p.extract_text() or ''}" for i, p in enumerate(pdf.pages, 1))
+
+
+def to_plain_text(content) -> str:
+    """Claude 형식의 content 블록 목록을 텍스트 한 덩어리로 바꾼다(PDF는 텍스트 추출본으로)."""
+    parts = []
+    for b in content:
+        if b.get("type") == "text":
+            parts.append(b["text"])
+        elif b.get("type") == "document" and b["source"].get("media_type") == "application/pdf":
+            parts.append("<document_text source=\"PDF에서 코드가 추출한 텍스트\">\n"
+                         f"{_pdf_text(b['source']['data'])}\n</document_text>")
+        else:
+            raise AIError(f"로컬 모델로 보낼 수 없는 입력 형식: {b.get('type')}")
+    return "\n\n".join(parts)
+
+
+_THINK = re.compile(r"^\s*<think>.*?</think>\s*", re.S)
+
+
+def _safe_dir(name: str) -> str:
+    return re.sub(r"[^0-9A-Za-z._-]+", "_", name)
+
+
 class LLM:
-    def __init__(self, mode: str, root: Path, reporter, model: str = DEFAULT_MODEL,
-                 use_fallback: bool = True, client=None):
-        if model not in MODELS:
-            raise AIError(f"지원하지 않는 모델: {model} (가능: {', '.join(MODELS)})")
+    def __init__(self, mode: str, root: Path, reporter, model: str | None = None, provider: str = "anthropic",
+                 use_fallback: bool = True, client=None, base_url: str | None = None):
+        if provider not in DEFAULT_MODELS:
+            raise AIError(f"지원하지 않는 제공자: {provider} (가능: {', '.join(DEFAULT_MODELS)})")
+        model = model or DEFAULT_MODELS[provider]
+        if provider == "anthropic" and model not in MODELS:
+            raise AIError(f"지원하지 않는 Claude 모델: {model} (가능: {', '.join(MODELS)})")
         self.mode = mode
+        self.provider = provider
         self.model = model
-        self.profile = MODELS[model]
-        self.rec_dir = root / "recordings" / model
+        self.profile = MODELS.get(model, ModelProfile(0.0, 0.0, "local", False, f"Ollama 로컬 모델 {model}"))
+        folder = model if provider == "anthropic" else f"ollama__{_safe_dir(model)}"
+        self.rec_dir = root / "recordings" / folder
         self.mock_dir = root / "mock_responses"
         self.rep = reporter
         self.use_fallback = use_fallback and self.profile.server_fallback
         self.calls: list[CallLog] = []
         self.client = client
-        if mode == "live" and client is None:
-            import anthropic   # live 모드에서만 필요
+        host = base_url or os.environ.get("OLLAMA_HOST") or "http://localhost:11434"
+        self.base_url = (host if host.startswith("http") else f"http://{host}").rstrip("/")
+        if mode == "live" and provider == "anthropic" and client is None:
+            import anthropic   # Claude live 모드에서만 필요
             self.client = anthropic.Anthropic()
+        if mode == "live" and provider == "ollama":
+            self._ollama_check()
+
+    # ---------- 표시용 ----------
+    @property
+    def display_name(self) -> str:
+        return "Claude" if self.provider == "anthropic" else f"Ollama 로컬 모델({self.model})"
+
+    @property
+    def mode_label(self) -> str:
+        if self.mode == "mock":
+            return MODE_LABEL["mock"]
+        where = "Claude API" if self.provider == "anthropic" else f"Ollama 로컬 {self.model}"
+        return f"{MODE_LABEL[self.mode]} — {where}"
 
     def reasoning(self, effort: str) -> tuple[dict, dict, str]:
         """(요청 최상위 파라미터, output_config 추가분, 화면 표시용 설명)"""
+        if self.provider == "ollama":
+            return {}, {}, "temperature 0"
         if self.profile.reasoning == "adaptive":
             return {"thinking": {"type": "adaptive"}}, {"effort": effort}, f"effort={effort}"
         budget = BUDGET_BY_EFFORT[effort]
@@ -102,19 +168,22 @@ class LLM:
         return {"thinking": {"type": "enabled", "budget_tokens": budget}}, {}, f"thinking 예산 {budget:,} 토큰"
 
     def _input_hash(self, system, content, schema, effort) -> str:
-        blob = json.dumps({"model": self.model, "effort": effort, "system": system,
+        blob = json.dumps({"provider": self.provider, "model": self.model, "effort": effort, "system": system,
                            "content": _redact_blocks(content), "schema": schema},
                           ensure_ascii=False, sort_keys=True)
         return hashlib.sha256(blob.encode()).hexdigest()
 
+    # ---------- 공통 진입점 ----------
     def run(self, step_id: str, *, title: str, system: str, content, schema: dict,
             effort: str = "low", max_tokens: int = 16000) -> dict:
         """AI 한 번 호출. 반환값은 JSON Schema 검증을 통과한 dict."""
         h = self._input_hash(system, content, schema, effort)
         _, _, rlabel = self.reasoning(effort)
         log = CallLog(step_id, title, self.mode, None, rlabel)
-        self.rep.say("AI", f"Claude 호출: {title}  [{MODE_LABEL[self.mode]}]")
+        self.rep.say("AI", f"{self.display_name} 호출: {title}  [{self.mode_label}]")
         self.rep.note(f"모델 {self.model} · {rlabel} · 출력 형식은 JSON Schema로 고정(구조화 출력)")
+        if self.provider == "ollama" and any(b.get("type") == "document" for b in content):
+            self.rep.note("로컬 모델은 PDF를 직접 읽지 못하므로, 코드가 PDF에서 뽑은 텍스트를 보낸다")
         self.rep.md += ["", f"<details><summary>AI 호출 원문 — {step_id}</summary>", "",
                         "**시스템 프롬프트(AI에게 준 규칙)**", "", "```text", system, "```", "",
                         "**보낸 내용**", "", "```json",
@@ -123,7 +192,11 @@ class LLM:
                         json.dumps(schema, ensure_ascii=False, indent=2), "```", "", "</details>", ""]
 
         if self.mode == "live":
-            data = self._live(step_id, system, content, schema, effort, max_tokens, h, log)
+            if self.provider == "ollama":
+                data, raw = self._live_ollama(system, content, schema, log)
+            else:
+                data, raw = self._live_anthropic(system, content, schema, effort, max_tokens, log)
+            self._record(step_id, h, log, data, raw)
         else:
             path = (self.rec_dir if self.mode == "replay" else self.mock_dir) / f"{step_id}.json"
             if not path.exists():
@@ -141,13 +214,30 @@ class LLM:
                 if rec.get("input_hash") != h:
                     self.rep.warn("입력이 녹화 당시와 다릅니다(프롬프트·데이터 변경). live 모드로 다시 녹화하세요.")
             else:
-                self.rep.note("※ 이 응답은 사람이 미리 써 둔 모의 응답입니다. 실제 AI 결과를 보려면 API 키를 넣고 live 모드로 실행하세요.")
+                self.rep.note("※ 이 응답은 사람이 미리 써 둔 모의 응답입니다. 실제 AI 결과를 보려면 live 모드로 실행하세요.")
 
         jsonschema.validate(data, schema)   # 모의·재생 응답도 같은 형식 검사를 받는다
         self.calls.append(log)
         return data
 
-    def _live(self, step_id, system, content, schema, effort, max_tokens, h, log) -> dict:
+    def _record(self, step_id, h, log, data, raw_usage):
+        self.rep.note(f"응답 모델 {log.model} · 입력 {log.input_tokens:,} / 출력 {log.output_tokens:,} 토큰"
+                      f" · 약 ${log.cost_usd:.4f} · {log.duration_s}초")
+        self.rec_dir.mkdir(parents=True, exist_ok=True)
+        (self.rec_dir / f"{step_id}.json").write_text(json.dumps({
+            "step_id": step_id,
+            "recorded_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+            "provider": self.provider,
+            "model": log.model,
+            "usage": raw_usage,
+            "cost_usd": log.cost_usd,
+            "duration_s": log.duration_s,
+            "input_hash": h,
+            "output": data,
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # ---------- Claude ----------
+    def _live_anthropic(self, system, content, schema, effort, max_tokens, log):
         import anthropic
         top, oc_extra, _ = self.reasoning(effort)
         kwargs = dict(
@@ -181,8 +271,7 @@ class LLM:
             raise AIError(f"모델이 요청을 거절했습니다(refusal). 이 건은 수작업으로 넘깁니다: {resp.stop_details}")
         if resp.stop_reason == "max_tokens":
             raise AIError("출력이 max_tokens에서 잘렸습니다. 입력을 더 작게 나눠야 합니다.")
-        text = next(b.text for b in resp.content if b.type == "text")
-        data = json.loads(text)
+        data = json.loads(next(b.text for b in resp.content if b.type == "text"))
 
         u = resp.usage
         p = self.profile
@@ -195,22 +284,60 @@ class LLM:
                               + cache_write * p.input_price * 1.25
                               + log.cache_read_tokens * p.input_price * 0.1
                               + log.output_tokens * p.output_price) / 1_000_000, 5)
-        self.rep.note(f"응답 모델 {resp.model} · 입력 {log.input_tokens:,} / 출력 {log.output_tokens:,} 토큰"
-                      f" · 약 ${log.cost_usd:.4f} · {log.duration_s}초")
-        self.rec_dir.mkdir(parents=True, exist_ok=True)
-        (self.rec_dir / f"{step_id}.json").write_text(json.dumps({
-            "step_id": step_id,
-            "recorded_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
-            "model": resp.model,
-            "request_id": getattr(resp, "_request_id", None),
-            "stop_reason": resp.stop_reason,
-            "usage": u.to_dict() if hasattr(u, "to_dict") else None,
-            "cost_usd": log.cost_usd,
-            "duration_s": log.duration_s,
-            "input_hash": h,
-            "output": data,
-        }, ensure_ascii=False, indent=2), encoding="utf-8")
-        return data
+        return data, (u.to_dict() if hasattr(u, "to_dict") else None)
+
+    # ---------- Ollama (로컬 오픈소스 모델) ----------
+    def _ollama(self, path: str, payload: dict | None = None) -> dict:
+        req = urllib.request.Request(
+            self.base_url + path,
+            data=None if payload is None else json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="GET" if payload is None else "POST")
+        try:
+            with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT_S) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:300]
+            if e.code == 404 and "not found" in detail:
+                raise AIError(f"Ollama에 모델이 없습니다. 먼저 받으세요:  ollama pull {self.model}") from e
+            raise AIError(f"Ollama 오류 {e.code}: {detail}") from e
+        except (urllib.error.URLError, ConnectionError, TimeoutError) as e:
+            raise AIError(f"Ollama 서버({self.base_url})에 연결할 수 없습니다. "
+                          "Ollama 앱을 켜거나 터미널에서 `ollama serve`를 실행하세요.") from e
+
+    def _ollama_check(self):
+        names = {m.get("name") for m in self._ollama("/api/tags").get("models", [])}
+        want = self.model if ":" in self.model else f"{self.model}:latest"
+        if want not in names:
+            raise AIError(f"Ollama에 '{self.model}' 모델이 없습니다. 먼저 받으세요:  ollama pull {self.model}"
+                          + (f"  (설치된 모델: {', '.join(sorted(n for n in names if n))})" if names else ""))
+
+    def _live_ollama(self, system, content, schema, log):
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": to_plain_text(content)}]
+        t0 = time.perf_counter()
+        prompt_tok = out_tok = 0
+        for attempt in range(2):          # 형식이 어긋나면 오류 내용을 알려 주고 한 번 더 요청
+            resp = self._ollama("/api/chat", {"model": self.model, "messages": messages, "format": schema,
+                                              "stream": False, "options": OLLAMA_OPTIONS})
+            prompt_tok += resp.get("prompt_eval_count") or 0
+            out_tok += resp.get("eval_count") or 0
+            if resp.get("done_reason") == "length":
+                raise AIError("로컬 모델 출력이 길이 제한에서 잘렸습니다(num_predict). 입력을 줄이거나 제한을 늘리세요.")
+            text = _THINK.sub("", resp.get("message", {}).get("content", ""))
+            try:
+                data = json.loads(text)
+                jsonschema.validate(data, schema)
+                break
+            except (json.JSONDecodeError, jsonschema.ValidationError) as e:
+                if attempt == 1:
+                    raise AIError(f"로컬 모델이 정해진 형식(JSON Schema)에 맞게 답하지 못했습니다: {str(e)[:200]}") from e
+                messages += [{"role": "assistant", "content": text},
+                             {"role": "user", "content": f"형식 오류: {str(e)[:300]}\n정해진 JSON Schema에 맞게 JSON만 다시 출력하라."}]
+        log.duration_s = round(time.perf_counter() - t0, 2)
+        log.model = resp.get("model", self.model)
+        log.input_tokens, log.output_tokens = prompt_tok, out_tok
+        log.cost_usd = 0.0                # 로컬 실행: API 비용 없음(전기·장비 비용은 별도)
+        return data, {"input_tokens": prompt_tok, "output_tokens": out_tok}
 
 
 def pdf_block(path: Path) -> dict:
