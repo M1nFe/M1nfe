@@ -11,6 +11,11 @@ cd "$(dirname "$0")"
 
 PY="${PYTHON:-python3}"
 if [ ! -x .venv/bin/python ]; then
+  if ! "$PY" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+    echo "Python 3.10 이상이 필요합니다 (현재: $("$PY" --version 2>&1))." >&2
+    echo "macOS 기본 python3는 3.9입니다. 예: brew install python@3.12 후  PYTHON=python3.12 ./run.sh $*" >&2
+    exit 1
+  fi
   echo "[setup] 가상환경(.venv)을 만들고 패키지를 설치합니다…" >&2
   "$PY" -m venv .venv
   .venv/bin/python -m pip install -q --upgrade pip

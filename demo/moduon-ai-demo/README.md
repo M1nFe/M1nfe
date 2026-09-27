@@ -47,11 +47,12 @@ ollama serve                    # 앱으로 설치했다면 앱이 켜져 있으
 # 2) 모델 받기 (새 터미널 창에서) — qwen2.5:7b는 약 4.7GB
 ollama pull qwen2.5:7b
 
-# 3) 시연 실행
+# 3) 시연 실행 (Python 3.10 이상 필요 — macOS 기본 python3는 3.9라서 brew install python@3.12 권장)
 cd demo/moduon-ai-demo
 ./run.sh --provider ollama                    # 기본 모델 qwen2.5:7b
 ./run.sh --provider ollama --pause            # 발표용: 단계마다 Enter
 ./run.sh --provider ollama --model qwen2.5:3b # 가벼운 모델
+# python3가 3.9라면:  PYTHON=python3.12 ./run.sh --provider ollama
 ```
 
 | PC 메모리(대략) | 추천 모델 | 비고 |
