@@ -39,21 +39,35 @@ AI 결과는 모두 `staging_*`(검수 전) 테이블까지만 갑니다.
 
 [Ollama](https://ollama.com)는 오픈소스 모델(Qwen, Gemma, Llama 등)을 내 PC에서 돌리는 프로그램입니다. 인터넷으로 데이터를 보내지 않고, API 비용이 없습니다.
 
+> **명령어 블록은 한 줄씩 복사해 붙여 넣으세요.** Mac 기본 셸(zsh)은 명령어 뒤에 붙은 `# 설명`을 주석이 아니라 인자로 받아 오류를 냅니다. 그래서 아래 블록에는 주석을 넣지 않았습니다.
+
+**1) Ollama와 Python 3.12 설치** (macOS 기본 python3는 3.9라서 3.12가 필요합니다)
+
 ```bash
-# 1) Ollama 설치 (macOS) — 또는 ollama.com에서 앱을 받아 설치
-brew install ollama
-ollama serve                    # 앱으로 설치했다면 앱이 켜져 있으면 됨(이 줄 생략)
-
-# 2) 모델 받기 (새 터미널 창에서) — qwen2.5:7b는 약 4.7GB
-ollama pull qwen2.5:7b
-
-# 3) 시연 실행 (Python 3.10 이상 필요 — macOS 기본 python3는 3.9라서 brew install python@3.12 권장)
-cd demo/moduon-ai-demo
-./run.sh --provider ollama                    # 기본 모델 qwen2.5:7b
-./run.sh --provider ollama --pause            # 발표용: 단계마다 Enter
-./run.sh --provider ollama --model qwen2.5:3b # 가벼운 모델
-# python3가 3.9라면:  PYTHON=python3.12 ./run.sh --provider ollama
+brew install ollama python@3.12
 ```
+
+**2) Ollama를 백그라운드로 켜고 모델 받기** (qwen2.5:7b는 약 4.7GB. Ollama 앱으로 설치했다면 첫 줄 대신 앱을 켜 두면 됩니다)
+
+```bash
+brew services start ollama
+ollama pull qwen2.5:7b
+ollama list
+```
+
+`ollama list`에 `qwen2.5:7b`가 보이면 준비가 끝난 것입니다.
+
+**3) 시연 실행**
+
+```bash
+cd demo/moduon-ai-demo
+PYTHON=python3.12 ./run.sh --provider ollama
+```
+
+- 처음 한 번만 `PYTHON=python3.12`가 필요합니다. 가상환경(`.venv`)이 생긴 뒤에는 `./run.sh --provider ollama`만 입력하면 됩니다.
+- 발표용으로 단계마다 멈추려면 `./run.sh --provider ollama --pause`를 씁니다.
+- 가벼운 모델을 쓰려면 `ollama pull qwen2.5:3b`로 받은 뒤 `./run.sh --provider ollama --model qwen2.5:3b`를 씁니다.
+- Ollama를 끄려면 `brew services stop ollama`를 씁니다.
 
 | PC 메모리(대략) | 추천 모델 | 비고 |
 |---|---|---|
@@ -67,17 +81,19 @@ cd demo/moduon-ai-demo
 - **로컬 모델끼리 비교:** `./run.sh compare --models ollama:qwen2.5:3b ollama:qwen2.5:7b`. API 키를 넣으면 `claude-haiku-4-5`와도 비교할 수 있습니다.
 - **Ollama가 다른 주소에서 돌 때:** `--base-url http://주소:11434` 또는 `OLLAMA_HOST` 환경변수를 씁니다.
 - **자주 나오는 안내 메시지**
-  - "Ollama 서버에 연결할 수 없습니다" → Ollama 앱을 켜거나 `ollama serve`를 실행합니다.
+  - "Ollama 서버에 연결할 수 없습니다" → `brew services start ollama`를 실행하거나 Ollama 앱을 켭니다.
   - "모델이 없습니다" → 안내된 `ollama pull …` 명령을 실행합니다.
 
 ### 공통
 
 ```bash
 cd demo/moduon-ai-demo
-./run.sh                      # 처음에 .venv를 만들고 패키지 설치. 이후 자동 모드로 시연
-./run.sh --pause              # 발표용: 단계마다 Enter를 기다림
-./run.sh test                 # 테스트 (API 키 불필요)
+./run.sh
 ```
+
+- `./run.sh`: 처음에 `.venv`를 만들고 패키지를 설치한 뒤, 자동으로 고른 모드로 시연합니다.
+- `./run.sh --pause`: 발표용. 단계마다 Enter를 기다립니다.
+- `./run.sh test`: 테스트(API 키 불필요).
 
 `run.sh`는 `.venv`를 만든 뒤 `run_demo.py`에 인자를 그대로 넘깁니다. 직접 실행하려면 `pip install -r requirements.txt` 후 `python run_demo.py ...`를 쓰면 됩니다.
 
@@ -108,10 +124,12 @@ cd demo/moduon-ai-demo
 **Haiku로 충분한지 숫자로 확인하기:**
 
 ```bash
-ANTHROPIC_API_KEY=... ./run.sh compare                                   # Haiku 4.5 vs Opus 5
-./run.sh compare --models claude-haiku-4-5 claude-sonnet-5 claude-opus-5
-./run.sh compare --mode replay                                           # 녹화본끼리(키 불필요)
+./run.sh compare
 ```
+
+- `./run.sh compare`: Haiku 4.5와 Opus 5를 비교합니다(`ANTHROPIC_API_KEY` 필요).
+- `./run.sh compare --models claude-haiku-4-5 claude-sonnet-5 claude-opus-5`: 모델을 직접 고릅니다.
+- `./run.sh compare --mode replay`: 녹화본끼리 비교합니다(키 불필요).
 
 같은 시연을 모델별로 돌려서 기능별 정답 대조, 토큰, 응답 시간, 비용을 한 표로 보여 줍니다(`output/model_comparison.md`). 정답표가 작은 시연용이라, 운영 결정은 실제 골든셋으로 다시 확인해야 합니다.
 
@@ -138,8 +156,10 @@ ANTHROPIC_API_KEY=... ./run.sh compare                                   # Haiku
 
    ```bash
    openclaw config patch --file ./openclaw.patch.json5
-   openclaw skills info moduon-ai-demo      # "✓ Ready" 확인
+   openclaw skills info moduon-ai-demo
    ```
+
+   `✓ Ready`가 보이면 연결된 것입니다.
 
 3. 채팅에서 `/moduon-ai-demo`로 부르거나 "모두온 AI 시연 돌려줘"라고 말합니다. 새 스킬이 안 보이면 `/new`로 새 세션을 시작합니다.
 
