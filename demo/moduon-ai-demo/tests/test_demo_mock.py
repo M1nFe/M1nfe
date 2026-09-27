@@ -40,3 +40,46 @@ def test_full_demo_mock():
     assert json.loads(r["inputs"])["monthly_fee"] == 69000
     # 모든 확정 반영은 검수자(사람) 이름으로 기록
     assert st.one("select count(*) n from canonical_price where month='2026-10' and approved_by != '검수자(시뮬레이션)'")["n"] == 0
+
+
+def _run_until_matching(monkeypatch, overrides: dict):
+    """모의 모드로 장면 0~3을 돌리되, 일부 AI 응답을 주어진 출력으로 바꾼다."""
+    from moduon_demo.llm import LLM as _LLM
+    orig = _LLM.run
+
+    def fake_run(self, step_id, **kw):
+        if step_id in overrides:
+            self.calls.append(None)
+            return overrides[step_id]
+        return orig(self, step_id, **kw)
+    monkeypatch.setattr(_LLM, "run", fake_run)
+    rep = Reporter(file=io.StringIO(), width=160)
+    ctx = scenes.Ctx(root=ROOT, store=Store(), llm=LLM("mock", ROOT, rep), rep=rep,
+                     key=json.loads((ROOT / "data/answer_key.json").read_text(encoding="utf-8")))
+    for s in (scenes.scene0_setup, scenes.scene1_excel, scenes.scene2_pdf, scenes.scene3_matching):
+        s(ctx)
+    return ctx
+
+
+def _fixture(name):
+    return json.loads((ROOT / "tests/fixtures/qwen2.5_7b_run1" / f"{name}.json").read_text(encoding="utf-8"))["output"]
+
+
+def test_real_qwen_outputs_scoring(monkeypatch):
+    """실제 qwen2.5:7b 응답: A열(No)을 목록에서 뺀 매핑은 8/8로, 후보를 하나도 고르지 않은 매칭은 0/6으로 채점."""
+    ctx = _run_until_matching(monkeypatch, {"e2_header_map": _fixture("e2_header_map"),
+                                            "m4_match_judge": _fixture("m4_match_judge")})
+    assert ctx.metrics["① 자료 읽기(엑셀)"] == [8, 8]
+    assert ctx.metrics["② 상품명 매칭"] == [0, 6]
+    assert ctx.metrics["(비교) 유사도 1순위만 사용"] == [5, 6]
+    # 모델이 틀려도 사람(정답표) 확정 단계에서 바로잡혀 staging 매칭은 정답과 같다
+    assert ctx.store.one("select product_id from staging_mention where raw_name='갤럭시S24 512 블랙'")["product_id"] == "P002"
+
+
+def test_no_match_counts_as_new_product(monkeypatch):
+    m4 = json.loads((ROOT / "mock_responses/m4_match_judge.json").read_text(encoding="utf-8"))["output"]
+    for r in m4["results"]:
+        if r["mention_key"] == "m03":
+            r["decision"] = "no_match"
+    ctx = _run_until_matching(monkeypatch, {"m4_match_judge": m4})
+    assert ctx.metrics["② 상품명 매칭"] == [6, 6]

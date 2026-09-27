@@ -1,0 +1,74 @@
+{
+  "_설명": "사용자 Mac에서 Ollama qwen2.5:7b로 실제 실행한 응답(2026-09-27). 채점 규칙 회귀 테스트용.",
+  "model": "qwen2.5:7b",
+  "output": {
+    "results": [
+      {
+        "mention_key": "m01",
+        "decision": "ambiguous",
+        "candidate_key": null,
+        "extracted_attributes": {
+          "storage": "512GB",
+          "color": "black",
+          "variant": "S24"
+        },
+        "reason_ko": "모델코드가 같지만 용량이 다르기 때문에 확실한 매칭이 어렵습니다."
+      },
+      {
+        "mention_key": "m02",
+        "decision": "new_product_candidate",
+        "candidate_key": null,
+        "extracted_attributes": {
+          "storage": "256GB",
+          "color": "black",
+          "variant": "iPhone 16"
+        },
+        "reason_ko": "기존 상품과 후보가 모두 다르기 때문에 새로운 상품으로 판단됩니다."
+      },
+      {
+        "mention_key": "m03",
+        "decision": "ambiguous",
+        "candidate_key": null,
+        "extracted_attributes": {
+          "storage": "256GB",
+          "color": "silver",
+          "variant": "Z플립6"
+        },
+        "reason_ko": "모델코드가 다르기 때문에 확실한 매칭이 어렵습니다."
+      },
+      {
+        "mention_key": "m04",
+        "decision": "new_product_candidate",
+        "candidate_key": null,
+        "extracted_attributes": {
+          "storage": "500L",
+          "color": null,
+          "variant": "purewater WP500"
+        },
+        "reason_ko": "기존 상품과 후보가 모두 다르기 때문에 새로운 상품으로 판단됩니다."
+      },
+      {
+        "mention_key": "m05",
+        "decision": "ambiguous",
+        "candidate_key": null,
+        "extracted_attributes": {
+          "storage": "500L",
+          "color": "cold",
+          "variant": "purewater WP500"
+        },
+        "reason_ko": "모델코드가 다르기 때문에 확실한 매칭이 어렵습니다."
+      },
+      {
+        "mention_key": "m06",
+        "decision": "ambiguous",
+        "candidate_key": null,
+        "extracted_attributes": {
+          "storage": null,
+          "color": null,
+          "variant": "cleanair AC300"
+        },
+        "reason_ko": "모델코드가 없기 때문에 확실한 매칭이 어렵습니다."
+      }
+    ]
+  }
+}

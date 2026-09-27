@@ -39,6 +39,7 @@ FIELD_KO = {
 FIELD_UNIT = {"monthly_rental_fee": "KRW", "mandatory_months": "month", "registration_fee": "KRW"}
 UNIT_MULT = {"KRW": 1, "KRW_1K": 1_000, "KRW_10K": 10_000, "none": 1}
 MARK = {True: "✅", False: "❌", None: "➖"}
+COLOR_KO = {"black": "블랙", "silver": "실버", "white": "화이트"}
 
 
 @dataclass
@@ -155,16 +156,20 @@ def scene1_excel(ctx: Ctx):
     rows, ok_n = [], 0
     for col, exp in key.items():
         m = by_col.get(col)
+        missing = m is None
+        if missing:                       # AI가 목록에서 뺀 열 = 쓰지 않는 열(ignore)로 본다
+            m = {"field_code": "ignore", "condition_phrase": None}
         got_cond = "base"
         if m and m["field_code"] in ("device_price", "monthly_fee", "subsidy_amount"):
             try:
                 got_cond = resolve(m["condition_phrase"])
             except UnknownCondition:
                 got_cond = f"사전에 없음({m['condition_phrase']})"
-        ok = (m is not None and m["field_code"] == exp["field_code"]
+        ok = (m["field_code"] == exp["field_code"]
               and ("condition_key" not in exp or got_cond == exp["condition_key"]))
         ok_n += ok
-        rows.append([col, grid.get((key_row, col)), FIELD_KO.get(m["field_code"], m["field_code"]) if m else "(없음)",
+        rows.append([col, grid.get((key_row, col)),
+                     "(목록에서 뺌 → 사용 안 함)" if missing else FIELD_KO.get(m["field_code"], m["field_code"]),
                      CONDITION_LABELS.get(got_cond, got_cond) if "condition_key" in exp else "",
                      FIELD_KO[exp["field_code"]], MARK[ok]])
     header_ok = ai["header_row"] == key_row
@@ -367,11 +372,17 @@ def scene3_matching(ctx: Ctx):
     for i, (m, cands) in enumerate(need_ai, 1):
         mk = f"m{i:02d}"
         mkeys.append(mk)
-        lines.append(f'{mk} | 파트너: {m["partner"]} | 원래 이름: "{m["raw_name"]}" | 파일의 모델코드: {m["model_code"] or "없음"}')
+        mc = m["model_code"] if m["model_code"] and m["model_code"] != "-" else "없음"
+        lines += [f"[{mk}] 파트너: {m['partner']}", f'  원래 이름: "{m["raw_name"]}"', f"  파일의 모델코드: {mc}",
+                  "  후보(유사도 순):"]
         for j, (pid, sim) in enumerate(cands, 1):
             p = cat.products[pid]
-            attrs = ", ".join(x for x in [f"{p.storage_gb}GB" if p.storage_gb else "", p.color, p.variant] if x)
-            lines.append(f"  c{j} | {p.name} | 모델코드 {p.model_code or '없음'} | 속성: {attrs or '-'} | 유사도 {sim:.2f}")
+            attrs = " / ".join(x for x in [f"모델코드 {p.model_code}" if p.model_code else "",
+                                            f"용량 {p.storage_gb}GB" if p.storage_gb else "",
+                                            f"색상 {COLOR_KO.get(p.color, p.color)}" if p.color else "",
+                                            f"옵션 {p.variant}" if p.variant else ""] if x)
+            lines.append(f"    c{j}: {p.name}" + (f" ({attrs})" if attrs else ""))
+        lines.append("")
     block = "\n".join(lines)
     rep.text_block("AI에게 보내는 내용 (이름 + 코드가 뽑은 후보)", block)
     rep.pause()
@@ -403,7 +414,8 @@ def scene3_matching(ctx: Ctx):
                 grade, why = match_grade(cat.products[chosen], m["model_code"], attrs, idx == 0, r["decision"])
             else:
                 grade, why = "low", f"AI 판정: {r['decision']}"
-            ai_pick = chosen or ("NEW" if r["decision"] == "new_product_candidate" else r["decision"])
+            # '신규 상품 후보'와 '해당 없음'은 둘 다 "후보 중에 없음"이라 신규 상품(NEW)의 정답으로 인정한다
+            ai_pick = chosen or ("NEW" if r["decision"] in ("new_product_candidate", "no_match") else r["decision"])
             ok = ai_pick == exp
             ok_n += ok
             st.exec("update staging_mention set match_state='pending_match_review', ai_decision=?, ai_grade=? where id=?",
