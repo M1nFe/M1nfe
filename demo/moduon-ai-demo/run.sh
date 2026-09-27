@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # 모두온 AI 시연 실행 스크립트 (사람·OpenClaw 스킬 공용)
 #
+#   ./run.sh app                           # 실행 프로그램: 브라우저에서 직접 눌러 보는 모두온 AI 콘솔
 #   ./run.sh check                         # 시연 전 점검 (Ollama·모델·녹화본·터미널 폭)
 #   ./run.sh rehearse                      # 리허설: Ollama로 실제 실행하고 응답을 녹화
 #   ./run.sh present                       # 발표: 녹화본 재생, 단계마다 Enter, 장면 9에서 요금 설계 화면 열기
@@ -26,6 +27,7 @@ if [ ! -x .venv/bin/python ]; then
 fi
 
 case "${1:-}" in
+  app)      shift; exec .venv/bin/python -m moduon_demo.app.server "$@" ;;
   check)    shift; exec .venv/bin/python preflight.py "$@" ;;
   rehearse) shift; exec .venv/bin/python run_demo.py --provider ollama --mode live "$@" ;;
   present)  shift; exec .venv/bin/python run_demo.py --provider ollama --mode replay --pause --open-screen "$@" ;;

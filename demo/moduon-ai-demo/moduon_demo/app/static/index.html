@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>모두온 AI 콘솔</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <b>모두온 AI 콘솔</b>
+    <small>시연용 · 가상 데이터 · 내 PC에서만 실행</small>
+  </div>
+  <div class="engine">
+    <span id="engine-dot" class="dot" title="AI 엔진 상태"></span>
+    <label for="engine-select" class="sr">AI 엔진</label>
+    <select id="engine-select"></select>
+    <button id="engine-apply" class="btn">엔진 적용</button>
+    <button id="reset" class="btn ghost" title="모든 처리 결과를 지우고 처음 상태로">처음부터</button>
+  </div>
+</header>
+<div class="layout">
+  <nav class="side" aria-label="단계">
+    <button data-page="collect"><span class="n">1</span>전산 수집<em id="b-collect"></em></button>
+    <button data-page="match"><span class="n">2</span>상품명 매칭<em id="b-match"></em></button>
+    <button data-page="review"><span class="n">3</span>값 검수·확정<em id="b-review"></em></button>
+    <button data-page="screen"><span class="n">4</span>요금 설계 화면</button>
+    <button data-page="ask"><span class="n">5</span>자연어 조회</button>
+    <button data-page="log"><span class="n">6</span>AI 기록</button>
+    <div class="legend">
+      <div>🤖 AI — 읽기·고르기·설명(제안)</div>
+      <div>⚙️ 코드 — 검증·규칙·저장</div>
+      <div>🙋 사람 — 승인·확정(여기서는 나)</div>
+    </div>
+  </nav>
+  <main id="page" tabindex="-1"></main>
+</div>
+<div id="job" class="job" hidden>
+  <div class="job-head"><span class="spinner" aria-hidden="true"></span><b id="job-title"></b><button id="job-close" class="x" hidden aria-label="닫기">×</button></div>
+  <ol id="job-log"></ol>
+</div>
+<div id="toast" class="toast" hidden></div>
+<div id="modal" class="modal" hidden>
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-head"><b id="modal-title"></b><button class="x" id="modal-close" aria-label="닫기">×</button></div>
+    <div id="modal-body"></div>
+  </div>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

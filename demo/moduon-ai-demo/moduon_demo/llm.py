@@ -119,7 +119,8 @@ def _safe_dir(name: str) -> str:
 
 class LLM:
     def __init__(self, mode: str, root: Path, reporter, model: str | None = None, provider: str = "anthropic",
-                 use_fallback: bool = True, client=None, base_url: str | None = None):
+                 use_fallback: bool = True, client=None, base_url: str | None = None, record: bool = True,
+                 history: list | None = None):
         if provider not in DEFAULT_MODELS:
             raise AIError(f"지원하지 않는 제공자: {provider} (가능: {', '.join(DEFAULT_MODELS)})")
         model = model or DEFAULT_MODELS[provider]
@@ -135,6 +136,8 @@ class LLM:
         self.rep = reporter
         self.use_fallback = use_fallback and self.profile.server_fallback
         self.calls: list[CallLog] = []
+        self.record = record                  # False: 녹화본을 남기지 않는다(실행 프로그램은 발표용 녹화본을 덮어쓰지 않음)
+        self.history = history if history is not None else []   # 호출마다 보낸 원문·응답(실행 프로그램의 'AI 기록')
         self.client = client
         host = base_url or os.environ.get("OLLAMA_HOST") or "http://localhost:11434"
         self.base_url = (host if host.startswith("http") else f"http://{host}").rstrip("/")
@@ -196,7 +199,8 @@ class LLM:
                 data, raw = self._live_ollama(system, content, schema, log)
             else:
                 data, raw = self._live_anthropic(system, content, schema, effort, max_tokens, log)
-            self._record(step_id, h, log, data, raw)
+            if self.record:
+                self._record(step_id, h, log, data, raw)
         else:
             path = (self.rec_dir if self.mode == "replay" else self.mock_dir) / f"{step_id}.json"
             if not path.exists():
@@ -218,7 +222,27 @@ class LLM:
 
         jsonschema.validate(data, schema)   # 모의·재생 응답도 같은 형식 검사를 받는다
         self.calls.append(log)
+        self._remember(log, system, content, schema, data)
         return data
+
+    def _remember(self, log, system, content, schema, data):
+        self.history.append({
+            "no": len(self.history) + 1, "step_id": log.step_id, "title": log.title, "mode": self.mode,
+            "mode_label": self.mode_label, "provider": self.provider, "model": log.model or self.model,
+            "reasoning": log.reasoning, "input_tokens": log.input_tokens, "output_tokens": log.output_tokens,
+            "duration_s": log.duration_s, "cost_usd": log.cost_usd, "system": system,
+            "content": _redact_blocks(content), "schema": schema, "output": data})
+
+    def mock_output(self, step_id: str, *, title: str, system: str, content, schema: dict, output: dict) -> dict:
+        """모의 모드에서 녹화 파일 대신 부르는 쪽이 고른 모의 응답을 쓴다(실행 프로그램의 이름별 매칭 등).
+        형식 검사와 호출 기록은 run()과 똑같이 한다."""
+        assert self.mode == "mock"
+        log = CallLog(step_id, title, "mock", None, "모의 응답")
+        self.rep.say("AI", f"{self.display_name} 호출: {title}  [{self.mode_label}]")
+        jsonschema.validate(output, schema)
+        self.calls.append(log)
+        self._remember(log, system, content, schema, output)
+        return output
 
     def _record(self, step_id, h, log, data, raw_usage):
         self.rep.note(f"응답 모델 {log.model} · 입력 {log.input_tokens:,} / 출력 {log.output_tokens:,} 토큰"

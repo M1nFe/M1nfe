@@ -5,7 +5,6 @@
 AI의 출력은 staging(검수 전)까지만 간다. canonical(확정)·계산·요금 설계 화면에는 AI가 없다.
 """
 import csv
-import hashlib
 import inspect
 import json
 import re
@@ -14,21 +13,18 @@ import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import pdfplumber
-from openpyxl import load_workbook
-from openpyxl.utils import get_column_letter
-
+from . import ingest
 from .ai import anomaly_explain, extract_doc, header_map, kakao_parse, match_judge, nlq_parse, notice_parse
 from .calc import engine as calc_engine
 from .calc import formulas
+from .ingest import DEFAULT_TEMPLATE, MONTH, PREV_MONTH, fill_template   # noqa: F401 (테스트·앱에서 사용)
 from .rules import anomaly as anomaly_rules
 from .rules import queries, verify
-from .rules.conditions import CONDITION_LABELS, JOIN_KEYS, PlanBook, UnknownCondition, label, resolve
+from .rules.conditions import CONDITION_LABELS, PlanBook, UnknownCondition, label, resolve
 from .rules.matching import Catalog, match_grade, verify_attributes
-from .rules.text import compact, parse_count, parse_krw
+from .rules.text import compact, parse_krw
 from .screen import rate_design
 
-MONTH, PREV_MONTH = "2026-10", "2026-09"
 STEP_IDS = ["e2_header_map", "k2_kakao_parse", "e3_pdf_extract", "m4_match_judge", "a3_anomaly_explain",
             "n1_notice_parse", "q1_nlq", "q2_nlq", "q3_nlq", "q4_nlq"]
 PARTNER_CATEGORY = {"A통신": "telecom", "B통신": "telecom", "C통신": "telecom", "B상조": "funeral", "C렌탈": "appliance"}
@@ -38,14 +34,12 @@ FIELD_KO = {
     "monthly_installment": "월 납입금", "installment_count": "납입 횟수", "other": "기타",
     "product_name": "상품명", "model_code": "모델코드", "memo": "비고", "ignore": "(사용 안 함)",
 }
-FIELD_UNIT = {"monthly_rental_fee": "KRW", "mandatory_months": "month", "registration_fee": "KRW"}
+FIELD_UNIT = ingest.FIELD_UNIT
 UNIT_KO = {"KRW": "원", "KRW_1K": "천원", "KRW_10K": "만원", "none": "-"}
 MARK = {True: "✅", False: "❌", None: "➖"}
-COLOR_KO = {"black": "블랙", "silver": "실버", "white": "화이트"}
 # 원본 종류 → 확정 DB에 남기는 출처 표시
 SOURCE_LABEL = {"xlsx": "엑셀 정책표(AI 열 매핑 → 규칙 파서)", "kakao": "카톡 공지(AI 추출)",
                 "api": "전산 API(규칙)", "csv": "전산 CSV(승인 양식·규칙)", "pdf": "PDF 안내문(AI 추출)"}
-C_TEMPLATE = ["상품코드", "단말명", "출고가", "요금제코드", "공시지원금", "리베이트_번호이동", "리베이트_기기변경"]
 
 
 @dataclass
@@ -74,12 +68,12 @@ class Ctx:
         return PlanBook.from_db(self.store)
 
 
+_won = ingest.won
+_grade = ingest.grade
+
+
 def _sha(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _won(v) -> str:
-    return "-" if v is None else f"{v:,}"
+    return ingest.sha(path.read_bytes())
 
 
 def _man(v) -> str:
@@ -93,17 +87,6 @@ def _man(v) -> str:
 def _acc(ctx, ok: int, total: int) -> str:
     s = f"{ok}/{total} 일치"
     return s + " (모의 응답이라 정확도로 볼 수 없음)" if ctx.mock else s
-
-
-def _fix_particles(text: str) -> str:
-    """'690,000원로' → '690,000원으로' — 숫자를 코드가 채운 뒤 받침에 맞게 조사를 고친다."""
-    return re.sub(r"원(로|를|는)(?=\s|[.,)(]|$)", lambda m: "원" + {"로": "으로", "를": "을", "는": "은"}[m[1]], text)
-
-
-def _grade(checks) -> str:
-    if any(c.ok is False for c in checks):
-        return "low"
-    return "high" if all(c.ok for c in checks) else "medium"
 
 
 def _item_label(ctx, partner, field_code, plan_id, cond) -> str:
@@ -144,45 +127,13 @@ def scene0_setup(ctx: Ctx):
         ["C렌탈", "PDF 안내문", "월 렌탈료·의무기간·등록비", "🤖 AI 추출 → ⚙️ 검증"],
         ["B상조", "공지 메일", "납입금 변경·판매 종료", "🤖 AI 구조화(기록만)"],
     ])
-    with st.role("setup"):
-        for r in csv.DictReader(open(ctx.root / "data/product_master.csv", encoding="utf-8")):
-            st.exec("insert into canonical_product values (?,?,?,?,?,?,?,?)",
-                    (r["id"], r["category"], r["vendor"], r["name"], r["model_code"],
-                     r["storage_gb"], r["color"], r["variant"]))
-        n_plan = 0
-        for r in csv.DictReader(open(ctx.root / "data/plan_master.csv", encoding="utf-8")):
-            st.exec("insert into canonical_plan values (?,?,?,?)", (r["partner"], r["plan_id"], r["name"], int(r["monthly_fee"])))
-            for a in r["aliases"].split("|"):
-                st.exec("insert into canonical_plan_alias values (?,?,?)", (r["partner"], a, r["plan_id"]))
-            n_plan += 1
-        n_alias = 0
-        for r in csv.DictReader(open(ctx.root / "data/product_alias.csv", encoding="utf-8")):
-            st.exec("insert into canonical_alias values (?,?,?,?)", (r["partner"], r["alias"], r["product_id"], "기존 확정"))
-            n_alias += 1
-        n = 0
-        for r in csv.DictReader(open(ctx.root / "data/price_2609.csv", encoding="utf-8")):
-            st.exec("insert into canonical_price(partner, product_id, plan_id, field_code, condition_key, value_int, unit,"
-                    " month, source, approved_by) values (?,?,?,?,?,?,?,?,?,?)",
-                    (r["partner"], r["product_id"], r["plan_id"], r["field_code"], r["condition_key"],
-                     int(r["value_int"]), r["unit"], PREV_MONTH, "기존 확정", "기존 확정"))
-            n += 1
-    rep.say("DB", f"기존 확정 데이터 적재: 표준 상품 10개, 통신 3사 요금제 {n_plan}개, 승인된 상품명·연동 코드 alias {n_alias}개, "
-                  f"{PREV_MONTH} 확정 단가 {n}건")
+    n = ingest.load_masters(st, ctx.root)
+    rep.say("DB", f"기존 확정 데이터 적재: 표준 상품 {n['products']}개, 통신 3사 요금제 {n['plans']}개, "
+                  f"승인된 상품명·연동 코드 alias {n['aliases']}개, {PREV_MONTH} 확정 단가 {n['prices']}건")
     rep.pause()
 
 
 # ─────────────────────────────────────────────────────────────── 장면 1
-def _merged_fill(ws) -> dict:
-    """병합 셀의 값을 병합 범위 전체에 채운 사전 {(행, 열문자): 값}. 구조 처리는 코드가 한다."""
-    fill = {}
-    for rng in ws.merged_cells.ranges:
-        v = ws.cell(rng.min_row, rng.min_col).value
-        for r in range(rng.min_row, rng.max_row + 1):
-            for c in range(rng.min_col, rng.max_col + 1):
-                fill[(r, get_column_letter(c))] = v
-    return fill
-
-
 def _short(field_code, plan_id, cond) -> str:
     kind = {"subsidy_amount": "공시", "device_price": "출고가"}.get(field_code) or \
         {"join=mnp": "번이", "join=chg": "기변"}.get(cond, FIELD_KO.get(field_code, field_code))
@@ -202,25 +153,10 @@ def scene1_excel(ctx: Ctx):
               "두 줄로 된 열 제목을 보고 열마다 '무슨 값인지(출고가·공시지원금·리베이트), 어느 요금제·가입유형인지, "
               "단위가 원인지 만원인지'를 제안한다. 값은 읽지 않는다 — 사람이 매핑을 승인하면 코드가 전체 행의 값을 읽는다.")
     path = ctx.root / "data/a_telecom_price_2610.xlsx"
-    with st.role("ingest_worker"):
-        rid = st.exec("insert into raw_file(partner, kind, filename, sha256) values (?,?,?,?)",
-                      ("A통신", "xlsx", path.name, _sha(path)))
+    rid = ingest.save_raw(st, "A통신", "xlsx", path.name, path.read_bytes())
     rep.say("코드", f"원본 보관: raw_file #{rid} {path.name} (sha256 {_sha(path)[:12]}…) — 원본은 수정하지 않는다")
-    ws = load_workbook(path, data_only=True).active
-    fill = _merged_fill(ws)
-    cols = [get_column_letter(c) for c in range(1, ws.max_column + 1)]
     sample_rows = 10
-    grid, lines = {}, []
-    for r in range(1, sample_rows + 1):
-        cells = []
-        for L in cols:
-            v = fill.get((r, L), ws[f"{L}{r}"].value)
-            grid[(r, L)] = "" if v is None else str(v)
-            if v is not None:
-                cells.append(f"{L}: {v}")
-        if cells:
-            lines.append(f"행 {r} | " + " | ".join(cells))
-    grid_text = "\n".join(lines)
+    ws, grid, grid_text, cols = ingest.excel_grid(path, sample_rows)
     rep.say("코드", "A통신의 승인된 양식 템플릿 검색 → 없음(새 양식) → AI에게 매핑 '제안'을 요청")
     rep.say("코드", f"AI에게는 처음 {sample_rows}행(제목·안내문·두 줄 열 제목·샘플 5행)만 보낸다. 병합된 칸은 코드가 같은 글자로 채웠다")
     rep.text_block("AI에게 보내는 시트 내용", grid_text)
@@ -284,41 +220,10 @@ def scene1_excel(ctx: Ctx):
         header_rows = key_rows
 
     rep.say("코드", "승인된 매핑으로 '규칙 파서'가 전체 행을 읽는다 (여기부터는 AI가 아니다)")
-    prod_col = next(c for c, v in final.items() if v[0] == "product_name")
-    model_col = next((c for c, v in final.items() if v[0] == "model_code"), None)
-    memo_col = next((c for c, v in final.items() if v[0] == "memo"), None)
-    price_cols = [(c, v) for c, v in final.items() if v[0] in verify.PRICE_FIELDS]
-    heads = {L: verify.compose_header(grid, header_rows, L) for L in cols}
-    pivot, n_rec = [], 0
-    with st.role("ingest_worker"):
-        for r in range(1, min(header_rows)):          # 열 제목 위의 안내문(단위·조건)은 조건 메모로 보관
-            text = ws[f"A{r}"].value
-            if text and str(text).startswith("※"):
-                st.exec("insert into staging_note(raw_file_id, partner, mention_id, kind, text) values (?,?,?,?,?)",
-                        (rid, "A통신", None, "sheet_note", str(text)))
-        for r in range(max(header_rows) + 1, ws.max_row + 1):
-            name = ws[f"{prod_col}{r}"].value
-            if not name:
-                continue
-            model = ws[f"{model_col}{r}"].value if model_col else None
-            memo = ws[f"{memo_col}{r}"].value if memo_col else None
-            source_row = f"행 {r}: " + " | ".join(f"{heads[L]}={ws[f'{L}{r}'].value}" for L in cols
-                                                    if ws[f"{L}{r}"].value is not None)
-            mid = st.exec("insert into staging_mention(raw_file_id, partner, category, raw_name, model_code) "
-                          "values (?,?,?,?,?)", (rid, "A통신", "telecom", str(name), model))
-            prow = [name]
-            for c, (fcode, plan_id, cond, unit) in price_cols:
-                raw_v = ws[f"{c}{r}"].value
-                v = raw_v if isinstance(raw_v, int) else parse_krw(str(raw_v))
-                value = None if v is None else v * verify.UNIT_MULT.get(unit, 1)
-                st.exec("insert into staging_record(raw_file_id, mention_id, partner, plan_id, field_code, condition_key, "
-                        "value_int, unit, value_text, loc, evidence_text, extractor, grade, state, note) "
-                        "values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (rid, mid, "A통신", plan_id, fcode, cond, value, "KRW", str(raw_v), f"{c}{r}", source_row,
-                         "rule", "rule", "validated", memo))
-                prow.append(_won(value) if fcode == "device_price" else _man(value))
-                n_rec += 1
-            pivot.append(prow)
+    price_cols, parsed = ingest.excel_parse(st, rid, "A통신", "telecom", ws, grid, cols, final, header_rows)
+    pivot = [[row[0]] + [_won(v) if f == "device_price" else _man(v) for v, (_, (f, _, _, _)) in zip(row[1:], price_cols)]
+             for row in parsed]
+    n_rec = sum(len(row) - 1 for row in parsed)
     rep.table("staging에 저장된 값 (검수 전 · 출고가는 원, 나머지는 만원=개)",
               ["상품명(원문)"] + [_short(f, p, c) for _, (f, p, c, _) in price_cols], pivot)
     rep.say("DB", f"staging에 {n_rec}건 저장(단말 {len(pivot)}개 × 항목 {len(price_cols)}개). "
@@ -338,9 +243,7 @@ def scene2_kakao(ctx: Ctx):
               "'55개'가 얼마인지(1개 = 1만원)는 AI가 아니라 코드 사전이 해석한다.")
     path = ctx.root / "data/b_telecom_kakao_2610.txt"
     text = path.read_text(encoding="utf-8")
-    with st.role("ingest_worker"):
-        rid = st.exec("insert into raw_file(partner, kind, filename, sha256) values (?,?,?,?)",
-                      ("B통신", "kakao", path.name, _sha(path)))
+    rid = ingest.save_raw(st, "B통신", "kakao", path.name, path.read_bytes())
     rep.say("코드", f"원본 보관: raw_file #{rid} {path.name} · 지시문 의심 문장: {len(verify.injection_scan(text))}건")
     rep.text_block("원문 (B통신 총판 카톡 공지)", text)
     rep.pause()
@@ -349,12 +252,9 @@ def scene2_kakao(ctx: Ctx):
 
     rep.say("코드", "값마다 검증: ① 근거 줄이 원문에 한 번 있는가 ② 그 줄에 상품명과 '요금제 값' 짝이 있는가 "
                    "③ 그 줄이 AI가 말한 가입유형 구역(▶ 제목) 아래에 있는가 ④ 요금제 표기가 사전에 있는가 ⑤ 금액을 코드가 해석할 수 있는가")
-    plans = ctx.plans
-    rows, staged = [], []
-    for rec in ai["records"]:
-        checks, got = verify.kakao_checks(text, rec, plans, "B통신")
-        g = _grade(checks)
-        staged.append((rec, checks, got, g))
+    staged = ingest.kakao_verify(text, ai, ctx.plans, "B통신")
+    rows = []
+    for rec, checks, got, g in staged:
         rows.append([rec["product_ref_raw"], rec["join_phrase"], f"{rec['plan_phrase']} → {got['plan_id'] or '?'}",
                      rec["value_text"], _won(got["value"]), *[MARK[c.ok] for c in checks], g])
     rep.table("코드 검증 결과 (값별)", ["상품(원문)", "구역(AI)", "요금제(AI → 사전)", "값(원문)", "코드 해석(원)",
@@ -362,33 +262,10 @@ def scene2_kakao(ctx: Ctx):
     if ai.get("unit_note_text"):
         rep.say("코드", f"AI가 옮긴 단위 안내: “{ai['unit_note_text']}” → 코드 사전의 '1개 = 1만원'으로 해석한다")
 
-    exp = {(compact(k["raw_name"]), k["plan_id"], k["condition_key"]): k["value"] for k in ctx.key["kakao_values"]}
-    got_set = {}
-    for rec, _, got, _ in staged:
-        got_set.setdefault((compact(rec["product_ref_raw"]), got["plan_id"], got["condition_key"]), set()).add(got["value"])
-    ok_n = sum(1 for k, v in exp.items() if got_set.get(k) == {v})   # 같은 칸에 다른 값도 적었으면 틀림
-    extra = sum(1 for k in got_set if k not in exp)
+    ok_n, extra = ingest.kakao_score(staged, ctx.key["kakao_values"])
+    exp = ctx.key["kakao_values"]
     rep.say("정답", f"리베이트 값 {_acc(ctx, ok_n, len(exp))}" + (f" · 정답에 없는 값 {extra}건" if extra else ""))
-
-    with st.role("ingest_worker"):
-        mids = {}
-        for rec, checks, got, g in staged:
-            name = rec["product_ref_raw"]
-            if compact(name) not in mids:
-                mids[compact(name)] = st.exec("insert into staging_mention(raw_file_id, partner, category, raw_name, "
-                                              "model_code) values (?,?,?,?,?)", (rid, "B통신", "telecom", name, None))
-            st.exec("insert into staging_record(raw_file_id, mention_id, partner, plan_id, field_code, condition_key, "
-                    "value_int, unit, value_text, loc, evidence_text, extractor, grade, checks, state) "
-                    "values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (rid, mids[compact(name)], "B통신", got["plan_id"] or "", "rebate", got["condition_key"] or "base",
-                     got["value"], "KRW", rec["value_text"], rec["join_phrase"], rec["evidence_text"], "ai", g,
-                     json.dumps({c.name: c.ok for c in checks}, ensure_ascii=False), "validated"))
-        kept = 0
-        for c in ai["conditions"]:
-            if verify.evidence_in_text(text, c).ok:        # 원문에 있는 문장만 조건 메모로 보관
-                st.exec("insert into staging_note(raw_file_id, partner, mention_id, kind, text) values (?,?,?,?,?)",
-                        (rid, "B통신", None, "condition", c))
-                kept += 1
+    kept = ingest.kakao_store(st, rid, "B통신", text, staged, ai["conditions"])
     rep.say("DB", f"staging에 리베이트 {len(staged)}건, 조건 메모 {kept}건 저장 "
                   "(저장되는 숫자는 AI가 아니라 코드가 '개' 표기를 해석한 값)")
     ctx.metrics["① 자료 읽기(카톡)"] = [ok_n, len(exp)]
@@ -399,57 +276,20 @@ def scene2_kakao(ctx: Ctx):
 
 
 # ─────────────────────────────────────────────────────────────── 장면 3
-def _insert_rule_record(st, rid, mid, partner, plan_id, fcode, cond, v, loc, extractor):
-    st.exec("insert into staging_record(raw_file_id, mention_id, partner, plan_id, field_code, condition_key, "
-            "value_int, unit, value_text, loc, extractor, grade, state) values (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (rid, mid, partner, plan_id, fcode, cond, v, "KRW", str(v), loc, extractor, "rule", "validated"))
-
-
 def scene3_fixed_feeds(ctx: Ctx):
     rep, st = ctx.rep, ctx.store
     rep.scene(3, "양식이 고정된 전산 — B통신 API, C통신 CSV (AI 없음)",
               "이 장면에는 AI가 없다. 연동 규격이 정해진 API나 이미 승인된 양식의 파일은 코드가 규칙으로 읽는다. "
               "AI는 양식이 제각각이거나 문장으로 된 자료에만 쓴다.")
     plans = ctx.plans
-    summary = []
-    path = ctx.root / "data/b_telecom_api_2610.json"
-    body = json.loads(path.read_text(encoding="utf-8"))
-    n_b = 0
-    with st.role("ingest_worker"):
-        rid = st.exec("insert into raw_file(partner, kind, filename, sha256) values (?,?,?,?)",
-                      ("B통신", "api", path.name, _sha(path)))
-        for it in body["items"]:
-            mid = st.exec("insert into staging_mention(raw_file_id, partner, category, raw_name, model_code) "
-                          "values (?,?,?,?,?)", (rid, "B통신", "telecom", it["device_code"], None))
-            _insert_rule_record(st, rid, mid, "B통신", "", "device_price", "base", it["release_price"],
-                                it["device_code"], "api")
-            n_b += 1
-            for s in it["support"]:
-                _insert_rule_record(st, rid, mid, "B통신", plans.resolve("B통신", s["plan_code"]), "subsidy_amount",
-                                    "base", s["amount"], f"{it['device_code']}/{s['plan_code']}", "api")
-                n_b += 1
-    summary.append(["B통신", f"파트너 전산 API ({body['request']})", "연동 규격(고정 JSON) → 규칙",
-                    f"{len(body['items'])}개", f"{n_b}건", "출고가·공시지원금", "0회"])
-
+    b = ingest.feed_api(st, ctx.root / "data/b_telecom_api_2610.json", "B통신", plans)
+    summary = [["B통신", f"파트너 전산 API ({b['request']})", "연동 규격(고정 JSON) → 규칙",
+                f"{b['devices']}개", f"{b['values']}건", "출고가·공시지원금", "0회"]]
     path = ctx.root / "data/c_telecom_2610.csv"
     rows = list(csv.reader(open(path, encoding="utf-8")))
-    same = rows[0] == C_TEMPLATE
-    rep.say("코드", f"C통신 CSV 열 제목이 승인된 양식(C통신-CSV-v1)과 {'같음 → AI 없이 규칙으로 읽음' if same else '다름 → AI 매핑 필요'}")
-    n_c, mids = 0, {}
-    with st.role("ingest_worker"):
-        rid = st.exec("insert into raw_file(partner, kind, filename, sha256) values (?,?,?,?)",
-                      ("C통신", "csv", path.name, _sha(path)))
-        for code, _, price, plan_code, sub, mnp, chg in rows[1:]:
-            if code not in mids:
-                mids[code] = st.exec("insert into staging_mention(raw_file_id, partner, category, raw_name, model_code) "
-                                     "values (?,?,?,?,?)", (rid, "C통신", "telecom", code, None))
-                _insert_rule_record(st, rid, mids[code], "C통신", "", "device_price", "base", int(price), code, "template")
-                n_c += 1
-            pid = plans.resolve("C통신", plan_code)
-            for fcode, cond, v in [("subsidy_amount", "base", sub), ("rebate", "join=mnp", mnp), ("rebate", "join=chg", chg)]:
-                _insert_rule_record(st, rid, mids[code], "C통신", pid, fcode, cond, int(v), f"{code}/{plan_code}", "template")
-                n_c += 1
-    summary.append(["C통신", "전산 CSV 다운로드", "승인된 양식 → 규칙", f"{len(mids)}개", f"{n_c}건",
+    c = ingest.feed_csv(st, rows, path.name, "C통신", plans, path.read_bytes())
+    rep.say("코드", f"C통신 CSV 열 제목이 승인된 양식(C통신-CSV-v1)과 {'같음 → AI 없이 규칙으로 읽음' if c['template_ok'] else '다름 → AI 매핑 필요'}")
+    summary.append(["C통신", "전산 CSV 다운로드", "승인된 양식 → 규칙", f"{c['devices']}개", f"{c['values']}건",
                     "출고가·공시지원금·리베이트", "0회"])
     rep.table("⚙️ 규칙으로 읽은 전산", ["파트너", "받는 방식", "읽는 방법", "단말", "값", "항목", "AI 호출"], summary)
     rep.note("B통신은 출고가·공시지원금은 API로, 리베이트는 카톡으로 온다 — 같은 파트너의 값도 여러 곳에 흩어져 있다. "
@@ -458,7 +298,7 @@ def scene3_fixed_feeds(ctx: Ctx):
 
 
 # ─────────────────────────────────────────────────────────────── 장면 4
-_PII = re.compile(r"(\d{6}-?[1-4]\d{6})|(01[016789]-?\d{3,4}-?\d{4})")
+_PII = ingest.PII
 
 
 def scene4_pdf(ctx: Ctx):
@@ -467,14 +307,9 @@ def scene4_pdf(ctx: Ctx):
               "PDF를 읽고 표의 값을 '원문 표기 그대로' 옮겨 적는다. 값마다 그 값이 적힌 원문 한 줄(근거)을 붙인다. "
               "할인가·합계 계산이나 원문에 없는 값은 만들지 않는다.")
     path = ctx.root / "data/c_rental_price_2610.pdf"
-    with pdfplumber.open(path) as pdf:
-        pages = [p.extract_text() or "" for p in pdf.pages]
-        tables = [p.extract_tables() for p in pdf.pages]
-    full = "\n".join(pages)
+    pages, tables, full = ingest.pdf_read(path)
     inj = verify.injection_scan(full)
-    with st.role("ingest_worker"):
-        rid = st.exec("insert into raw_file(partner, kind, filename, sha256, injection_suspect) values (?,?,?,?,?)",
-                      ("C렌탈", "pdf", path.name, _sha(path), int(bool(inj))))
+    rid = ingest.save_raw(st, "C렌탈", "pdf", path.name, path.read_bytes(), bool(inj))
     rep.say("코드", f"원본 보관: raw_file #{rid} {path.name} ({len(pages)}페이지)")
     rep.say("코드", "사전 검사 ① 개인정보 패턴(주민번호·휴대폰 번호) → "
                    + ("발견 → AI에 보내지 않음" if _PII.search(full) else "없음 → AI에 보내도 됨"))
@@ -489,20 +324,9 @@ def scene4_pdf(ctx: Ctx):
 
     rep.say("코드", "값마다 3가지 검증: ① 근거 문장이 원문에 정확히 한 번 있는가 ② 표의 [행×열] 칸 값과 같은가 "
                    "③ AI가 적은 숫자와 코드가 원문 표기를 직접 파싱한 숫자가 같은가")
-    staged, vrows = [], []
-    for row in ai["rows"]:
-        pi = row["page"] - 1
-        ptext = pages[pi] if 0 <= pi < len(pages) else ""
-        ptables = tables[pi] if 0 <= pi < len(tables) else []
-        for f in row["fields"]:
-            unit = FIELD_UNIT.get(f["field"], "KRW")
-            checks = [verify.evidence_match(ptext, f["evidence_text"], row["row_label"], f["value_text"]),
-                      verify.cell_match(ptables, row["row_label"], f["col_header"], f["value_text"]),
-                      verify.number_crosscheck(f["value_text"], f["value_number"], unit)]
-            g = _grade(checks)
-            staged.append((row, f, checks, g))
-            vrows.append([row["row_label"], FIELD_KO.get(f["field"], f["field"]), f["value_text"],
-                          f["value_number"], *[MARK[c.ok] for c in checks], g])
+    staged = ingest.pdf_verify(pages, tables, ai)
+    vrows = [[row["row_label"], FIELD_KO.get(f["field"], f["field"]), f["value_text"], f["value_number"],
+              *[MARK[c.ok] for c in checks], g] for row, f, checks, g in staged]
     rep.table("코드 검증 결과 (값별)", ["행", "항목", "원문 표기", "AI 숫자", "근거", "셀", "숫자", "등급"], vrows)
     rep.note("등급은 모델이 스스로 말한 확신도가 아니라, 위 검증 결과로만 정한다 (high=전부 통과 / low=하나라도 실패 → 승인 버튼 잠김)")
 
@@ -537,24 +361,7 @@ def scene4_pdf(ctx: Ctx):
             ok_n += got.get((name, fcode)) == exp
     rep.say("정답", f"추출 값 {_acc(ctx, ok_n, total)}")
 
-    with st.role("ingest_worker"):
-        mids = {}
-        for row, f, checks, g in staged:
-            if f["field"] == "other":
-                continue
-            lbl = row["row_label"]
-            if lbl not in mids:
-                mids[lbl] = st.exec("insert into staging_mention(raw_file_id, partner, category, raw_name, model_code)"
-                                    " values (?,?,?,?,?)", (rid, "C렌탈", "appliance", lbl, None))
-            unit = FIELD_UNIT[f["field"]]
-            value = parse_krw(f["value_text"]) if unit == "KRW" else parse_count(f["value_text"])
-            st.exec("insert into staging_record(raw_file_id, mention_id, partner, field_code, condition_key, value_int,"
-                    " unit, value_text, loc, evidence_text, extractor, grade, checks, state) "
-                    "values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (rid, mids[lbl], "C렌탈", f["field"], "base", value, unit, f["value_text"],
-                     json.dumps({"page": row["page"], "row": lbl, "col": f["col_header"]}, ensure_ascii=False),
-                     f["evidence_text"], "ai", g, json.dumps({c.name: c.ok for c in checks}, ensure_ascii=False),
-                     "validated"))
+    ingest.pdf_store(st, rid, "C렌탈", staged)
     rep.say("DB", f"staging에 {len(staged)}건 저장 (추출 주체: AI, 저장되는 숫자는 AI 숫자가 아니라 코드가 원문 표기를 파싱한 값)")
     ctx.metrics["① 자료 읽기(PDF)"] = [ok_n, total]
     ctx.summary.append(["① 자료 읽기(PDF)", "표 값·근거 문장을 원문 그대로 옮김",
@@ -569,29 +376,9 @@ def scene5_matching(ctx: Ctx):
     rep.scene(5, "상품명 매칭 — 파트너마다 다른 이름을 표준 상품에 연결 (AI 기능 ② 상품명 매칭)",
               "규칙(alias·모델코드·정규화)으로 못 푼 이름에 대해서만, 코드가 뽑은 후보 중 같은 상품을 '고른다'. "
               "후보에 없는 상품은 만들 수 없고, 확정은 사람이 한다.")
-    cat = Catalog.from_db(st)
     mentions = st.query("select * from staging_mention where product_id is null order by id")
-    rule_rows, need_ai = [], []
-    with st.role("ingest_worker"):
-        for m in mentions:
-            raw, partner, category = m["raw_name"], m["partner"], m["category"]
-            pid, path = cat.m0_alias(partner, raw), "M0 alias(전에 승인한 이름·연동 코드)"
-            if not pid:
-                ids = cat.m0_model_code(m["model_code"])
-                pid, path = (ids[0], f"M0 모델코드 {m['model_code']} 유일 일치") if len(ids) == 1 else (None, None)
-                if len(ids) > 1:
-                    rule_rows.append([partner, raw, "M0 모델코드", f"{m['model_code']} → 후보 {len(ids)}개(유일하지 않음)"])
-            if not pid:
-                ids = cat.m1_norm(raw, category)
-                pid, path = (ids[0], "M1 정규화 규칙 일치") if len(ids) == 1 else (None, None)
-            if pid:
-                st.exec("update staging_mention set product_id=?, match_state='matched_rule', match_path=? where id=?",
-                        (pid, path, m["id"]))
-                rule_rows.append([partner, raw, path, f"→ {cat.products[pid].name} (AI 호출 안 함)"])
-            else:
-                cands = cat.m2_candidates(raw, category, 5)
-                need_ai.append((m, cands))
-                rule_rows.append([partner, raw, "M2 유사도 후보", f"후보 {len(cands)}개 → AI 판정 필요"])
+    rule_rows, need_ai = ingest.rule_match(st, mentions)
+    cat = Catalog.from_db(st)
     rep.table("⚙️ 규칙 단계 결과 (AI 없음)", ["파트너", "상품명(원문)", "단계", "결과"], rule_rows)
 
     key = ctx.key["matching"]
@@ -599,17 +386,7 @@ def scene5_matching(ctx: Ctx):
     for i, (m, cands) in enumerate(need_ai, 1):
         mk = f"m{i:02d}"
         mkeys.append(mk)
-        mc = m["model_code"] if m["model_code"] and m["model_code"] != "-" else "없음"
-        lines = [f"[{mk}] 파트너: {m['partner']}", f'  원래 이름: "{m["raw_name"]}"', f"  파일의 모델코드: {mc}",
-                 "  후보(유사도 순):"]
-        for j, (pid, sim) in enumerate(cands, 1):
-            p = cat.products[pid]
-            attrs = " / ".join(x for x in [f"모델코드 {p.model_code}" if p.model_code else "",
-                                            f"용량 {p.storage_gb}GB" if p.storage_gb else "",
-                                            f"색상 {COLOR_KO.get(p.color, p.color)}" if p.color else "",
-                                            f"옵션 {p.variant}" if p.variant else ""] if x)
-            lines.append(f"    c{j}: {p.name}" + (f" ({attrs})" if attrs else ""))
-        blocks.append("\n".join(lines))
+        blocks.append(ingest.match_block(cat, mk, m, cands))
     block = "\n\n".join(blocks)
     rep.text_block("AI에게 보내는 내용 (이름 + 코드가 뽑은 후보)", block)
     rep.pause()
@@ -693,30 +470,6 @@ def scene5_matching(ctx: Ctx):
 
 
 # ─────────────────────────────────────────────────────────────── 장면 6
-_PLACEHOLDER = re.compile(r"\{(prev_value|new_value|change_pct)\}")
-DEFAULT_TEMPLATE = "이전 값 {prev_value}에서 {new_value}로 바뀌었습니다({change_pct})."
-
-
-def fill_template(tmpl: str, prev_v, new_v) -> tuple[str, str | None]:
-    """AI가 쓴 설명 틀에 코드가 숫자를 채운다. (완성 문장, 틀을 버린 이유 또는 None)
-
-    허용된 자리표시자 3개 밖에 숫자나 다른 중괄호({memo} 등)가 있으면 틀을 버리고 기본 문구를 쓴다."""
-    rest = _PLACEHOLDER.sub("", tmpl)
-    why = None
-    if not tmpl.strip():
-        why = "설명이 비어 있음"
-    elif m := re.search(r"\{[^{}]*\}", rest):
-        why = f"허용되지 않은 자리표시자 {m[0]}"
-    elif "{" in rest or "}" in rest:
-        why = "짝이 맞지 않는 중괄호"
-    elif m := re.search(r"\d+", rest):
-        why = f"자리표시자 밖의 숫자 '{m[0]}'"
-    pct = anomaly_rules.change_pct(prev_v, new_v)
-    vals = {"prev_value": f"{_won(prev_v)}원", "new_value": f"{_won(new_v)}원",
-            "change_pct": "-" if pct is None else f"{pct:+.1f}%"}
-    return _fix_particles(_PLACEHOLDER.sub(lambda x: vals[x[1]], DEFAULT_TEMPLATE if why else tmpl)), why
-
-
 def scene6_anomaly(ctx: Ctx):
     rep, st, llm = ctx.rep, ctx.store, ctx.llm
     rep.scene(6, "이상 데이터 감지 (AI 기능 ③ 이상 감지)",
@@ -726,33 +479,20 @@ def scene6_anomaly(ctx: Ctx):
                        join staging_mention m on m.id = r.mention_id
                        join canonical_product p on p.id = m.product_id order by r.id""")
     flagged, table_rows, unchanged, settle = [], [], 0, 0
-    with st.role("ingest_worker"):
-        for r in recs:
-            prev = st.one("select value_int from canonical_price where partner=? and product_id=? and plan_id=? "
-                          "and field_code=? and condition_key=? and month=?",
-                          (r["partner"], r["product_id"], r["plan_id"], r["field_code"], r["condition_key"], PREV_MONTH))
-            prev_v = prev["value_int"] if prev else None
-            if prev_v == r["value_int"]:
-                st.exec("update staging_record set state='unchanged' where id=?", (r["id"],))
-                unchanged += 1
-                continue
-            events = anomaly_rules.check(r["field_code"], prev_v, r["value_int"]) if r["value_int"] is not None else \
-                [{"rule_code": "UNPARSEABLE", "severity": "block", "reason": "값을 숫자로 읽을 수 없음"}]
-            for e in events:
-                st.exec("insert into staging_anomaly(record_id, rule_code, severity, reason, prev_value, new_value) "
-                        "values (?,?,?,?,?,?)", (r["id"], e["rule_code"], e["severity"], e["reason"], prev_v, r["value_int"]))
-            state = "blocked" if any(e["severity"] == "block" for e in events) else "pending_review"
-            st.exec("update staging_record set state=? where id=?", (state, r["id"]))
-            pct = anomaly_rules.change_pct(prev_v, r["value_int"]) if r["value_int"] is not None else None
-            verdict = ", ".join(f"{e['rule_code']}({e['severity']})" for e in events) or "변경(규칙 위반 없음)"
-            if r["field_code"] in anomaly_rules.SETTLEMENT_FIELDS and state != "blocked":
-                verdict += " · 정산 금액 → 사람 승인 필수"
-                settle += 1
-            table_rows.append([r["partner"], r["product_name"],
-                               _item_label(ctx, r["partner"], r["field_code"], r["plan_id"], r["condition_key"]),
-                               _won(prev_v), _won(r["value_int"]), "-" if pct is None else f"{pct:+.1f}%", verdict])
-            if events:
-                flagged.append((r, prev_v, events))
+    for r, prev_v, events, state in ingest.detect(st, recs):
+        if state == "unchanged":
+            unchanged += 1
+            continue
+        pct = anomaly_rules.change_pct(prev_v, r["value_int"]) if r["value_int"] is not None else None
+        verdict = ", ".join(f"{e['rule_code']}({e['severity']})" for e in events) or "변경(규칙 위반 없음)"
+        if r["field_code"] in anomaly_rules.SETTLEMENT_FIELDS and state != "blocked":
+            verdict += " · 정산 금액 → 사람 승인 필수"
+            settle += 1
+        table_rows.append([r["partner"], r["product_name"],
+                           _item_label(ctx, r["partner"], r["field_code"], r["plan_id"], r["condition_key"]),
+                           _won(prev_v), _won(r["value_int"]), "-" if pct is None else f"{pct:+.1f}%", verdict])
+        if events:
+            flagged.append((r, prev_v, events))
     rep.say("코드", f"새 값과 {PREV_MONTH} 확정값 비교: 같음 {unchanged}건(반영 불필요), 바뀜 {len(table_rows)}건")
     rep.table("⚙️ 규칙 판정 (AI 없음)", ["파트너", "상품", "항목", "이전", "새 값", "변동", "규칙(심각도)"], table_rows)
     rep.note("block = 반영 차단(사람이 해소해야 함) / warn = 검수 필요. 심각도는 규칙이 정하고 AI가 바꿀 수 없다")
@@ -1050,20 +790,7 @@ def scene9_rate_screen(ctx: Ctx):
 # ─────────────────────────────────────────────────────────────── 장면 10
 def resolve_nlq(ctx, p: dict) -> tuple[dict, list[str]]:
     """AI가 옮긴 조건을 코드가 해석한다: 요금제 표기 → 요금제 ID, 금액 표기 → 원, 가입유형 → 조건 키."""
-    notes, out = [], {k: p.get(k) for k in ("partner", "category", "field", "op", "direction")}
-    out["plan_id"] = None
-    if p.get("plan_phrase"):
-        try:
-            out["plan_id"] = ctx.plans.resolve(p.get("partner"), p["plan_phrase"]) or None
-            notes.append(f"요금제 '{p['plan_phrase']}' → {out['plan_id']}")
-        except UnknownCondition:
-            notes.append(f"요금제 '{p['plan_phrase']}' → 사전에 없음(조건에서 뺌)")
-    out["condition_key"] = JOIN_KEYS.get(p.get("join"))
-    out["amount"] = parse_krw(p["amount_text"], gae=True) if p.get("amount_text") else None
-    if p.get("amount_text"):
-        notes.append(f"금액 '{p['amount_text']}' → {_won(out['amount'])}원" if out["amount"] is not None
-                     else f"금액 '{p['amount_text']}' → 해석 불가(조건에서 뺌)")
-    return out, notes
+    return ingest.resolve_nlq(ctx.plans, p)
 
 
 def scene10_nlq(ctx: Ctx):

@@ -15,7 +15,7 @@ create table staging_mention(id integer primary key, raw_file_id int, partner te
 create table staging_record(id integer primary key, raw_file_id int, mention_id int, partner text,
   plan_id text not null default '', field_code text, condition_key text, value_int int, unit text, value_text text, loc text,
   evidence_text text, extractor text, grade text, checks text, state text default 'extracted',
-  human_edited int default 0, note text);
+  human_edited int default 0, note text, review_note text);
 create table staging_anomaly(id integer primary key, record_id int, rule_code text, severity text,
   reason text, prev_value int, new_value int, ai_cause text, ai_explanation text, status text default 'open');
 create table staging_note(id integer primary key, raw_file_id int, partner text, mention_id int, kind text,
@@ -59,7 +59,8 @@ _WRITE_ACTIONS = {sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_D
 class Store:
     def __init__(self):
         # cached_statements=0: 역할이 바뀌면 문장을 다시 준비(prepare)해서 권한 검사를 다시 받게 한다
-        self.conn = sqlite3.connect(":memory:", cached_statements=0)
+        # check_same_thread=False: 실행 프로그램은 작업 스레드에서도 쓴다(접근은 부르는 쪽이 잠금으로 한 번에 하나씩)
+        self.conn = sqlite3.connect(":memory:", cached_statements=0, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.role_name = "setup"
         self.conn.executescript(SCHEMA)
