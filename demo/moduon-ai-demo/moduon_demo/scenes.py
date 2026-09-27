@@ -20,7 +20,7 @@ from openpyxl.utils import get_column_letter
 from .ai import anomaly_explain, extract_doc, header_map, match_judge, nlq_parse, notice_parse
 from .calc import engine as calc_engine
 from .calc import formulas
-from .llm import MODE_LABEL, MODEL
+from .llm import MODE_LABEL
 from .rules import anomaly as anomaly_rules
 from .rules import queries, verify
 from .rules.conditions import CONDITION_LABELS, UnknownCondition, resolve
@@ -51,6 +51,8 @@ class Ctx:
     key: dict
     tamper: bool = True
     summary: list = field(default_factory=list)
+    metrics: dict = field(default_factory=dict)   # 기능 → [정답 수, 전체]
+    facts: dict = field(default_factory=dict)
 
     @property
     def mock(self) -> bool:
@@ -84,7 +86,7 @@ ARG_KO = {"monthly_fee": "월정액", "device_price": "출고가", "subsidy": "�
 def scene0_setup(ctx: Ctx):
     rep, st = ctx.rep, ctx.store
     rep.title("모두온 AI 시연 — AI가 정확히 무엇을 하는가",
-              f"모드: {MODE_LABEL[ctx.llm.mode]} · 모델: {MODEL} · 기준 월: {MONTH} · 모든 데이터는 가상 샘플")
+              f"모드: {MODE_LABEL[ctx.llm.mode]} · 모델: {ctx.llm.model} · 기준 월: {MONTH} · 모든 데이터는 가상 샘플")
     if ctx.mock:
         rep.warn("모의(mock) 모드입니다. AI 응답은 사람이 미리 써 둔 예시이며 실제 Claude 결과가 아닙니다.\n"
                  "코드 검증·DB 권한·계산은 실제로 실행됩니다. 실제 AI 결과는 ANTHROPIC_API_KEY를 넣고 실행하세요.")
@@ -211,6 +213,7 @@ def scene1_excel(ctx: Ctx):
                 table_rows.append([name, FIELD_KO[fcode], CONDITION_LABELS[cond], _won(value), f"{c}{r}", "규칙 파서"])
     rep.table("staging에 저장된 값 (검수 전)", ["상품명(원문)", "항목", "조건", "값", "셀", "추출 주체"], table_rows)
     rep.say("DB", f"staging에 {len(table_rows)}건 저장. canonical(확정)에는 아직 아무것도 들어가지 않았다")
+    ctx.metrics["① 자료 읽기(엑셀)"] = [ok_n, len(key)]
     ctx.summary.append(["① 자료 읽기(엑셀)", "열 제목 8개의 의미를 제안",
                         "매핑 제안(staging 템플릿 초안)", "헤더 글자·조건 사전·필수 열",
                         _acc(ctx, ok_n, len(key)), "매핑 승인"])
@@ -322,6 +325,7 @@ def scene2_pdf(ctx: Ctx):
                      f["evidence_text"], "ai", g, json.dumps({c.name: c.ok for c in checks}, ensure_ascii=False),
                      "validated"))
     rep.say("DB", f"staging에 {len(staged)}건 저장 (추출 주체: AI, 저장되는 숫자는 AI 숫자가 아니라 코드가 원문 표기를 파싱한 값)")
+    ctx.metrics["① 자료 읽기(PDF)"] = [ok_n, total]
     ctx.summary.append(["① 자료 읽기(PDF)", "표 값·근거 문장을 원문 그대로 옮김",
                         "추출값(staging, 등급 포함)", "근거·셀·숫자 3중 대조",
                         _acc(ctx, ok_n, total), "값 승인(낮은 등급은 수정)"])
@@ -434,6 +438,8 @@ def scene3_matching(ctx: Ctx):
     cat2 = Catalog.from_db(st)
     again = sum(1 for m, _ in ai_done if cat2.m0_alias(m["partner"], m["raw_name"]))
     rep.say("코드", f"다음 달 같은 이름이 오면? alias 사전에 {alias_n}개가 추가되어 {again}개는 M0 규칙에서 바로 매칭 → AI 호출이 줄어든다")
+    ctx.metrics["② 상품명 매칭"] = [ok_n, len(need_ai)]
+    ctx.metrics["(비교) 유사도 1순위만 사용"] = [top1_ok, len(need_ai)]
     ctx.summary.append(["② 상품명 매칭", "코드가 뽑은 후보 중 같은 상품 고르기",
                         "후보 선택 제안(staging)", "후보 범위·속성 실재·등급",
                         _acc(ctx, ok_n, len(need_ai)), "매칭 확정·신규 상품 요청"])
@@ -572,6 +578,7 @@ def scene5_notice(ctx: Ctx):
                              exp.get("effective_from") in (None, date)])
                 break
     rep.say("정답", f"변경 사항 {_acc(ctx, ok_n, len(ctx.key['notice']))}")
+    ctx.metrics["④ 자연어처리(공지)"] = [ok_n, len(ctx.key["notice"])]
     ctx.summary.append(["④ 자연어처리(공지)", "메일 문장 → 변경 사항 목록",
                         "구조화 기록(staging_notice)", "근거 문장·숫자 파싱·날짜는 코드",
                         _acc(ctx, ok_n, len(ctx.key["notice"])), "담당자 확인"])
@@ -709,6 +716,7 @@ def scene7_nlq(ctx: Ctx):
                 rep.say("코드", f"지원하지 않는 질문 → 조회도 계산도 하지 않는다. AI가 적은 사유: {ai['unsupported_reason']}")
                 rep.note("정산·계산 금액은 계산 엔진(장면 6)의 결과 화면에서 확인한다. AI가 숫자를 만들지 않는다")
         rep.pause()
+    ctx.metrics["④ 자연어처리(조회)"] = [ok_n, len(ctx.key["nlq"])]
     ctx.summary.append(["④ 자연어처리(조회)", "질문 → 조회 종류 + enum 조건",
                         "조회 조건(쓰기 없음)", "enum 검증·고정 조회 함수·읽기 전용 권한",
                         _acc(ctx, ok_n, len(ctx.key["nlq"])), "결과 확인"])
@@ -731,14 +739,17 @@ def scene8_summary(ctx: Ctx):
     tin = sum(c.input_tokens for c in calls)
     tout = sum(c.output_tokens for c in calls)
     cost = sum(c.cost_usd for c in calls)
-    rep.table("AI 호출 내역", ["단계", "내용", "모드", "effort", "입력 토큰", "출력 토큰", "비용(USD, 추정)"],
-              [[c.step_id, c.title, MODE_LABEL[c.mode], c.effort, f"{c.input_tokens:,}", f"{c.output_tokens:,}",
-                f"{c.cost_usd:.4f}"] for c in calls]
-              + [["합계", f"{len(calls)}회", "", "", f"{tin:,}", f"{tout:,}", f"{cost:.4f}"]])
+    secs = sum(c.duration_s for c in calls)
+    rep.table(f"AI 호출 내역 (모델 {llm.model})",
+              ["단계", "내용", "모드", "추론 설정", "입력 토큰", "출력 토큰", "시간(초)", "비용(USD, 추정)"],
+              [[c.step_id, c.title, MODE_LABEL[c.mode], c.reasoning, f"{c.input_tokens:,}", f"{c.output_tokens:,}",
+                f"{c.duration_s:.1f}", f"{c.cost_usd:.4f}"] for c in calls]
+              + [["합계", f"{len(calls)}회", "", "", f"{tin:,}", f"{tout:,}", f"{secs:.1f}", f"{cost:.4f}"]])
     if ctx.mock:
-        rep.note("모의 모드라 토큰·비용은 0으로 표시된다")
+        rep.note("모의 모드라 토큰·시간·비용은 0으로 표시된다")
     n_can = st.one("select count(*) n from canonical_price where month=?", (MONTH,))["n"]
     n_ai = st.one("select count(*) n from canonical_price where month=? and source like '%AI 추출%'", (MONTH,))["n"]
     n_edit = st.one("select count(*) n from staging_record where human_edited=1")["n"]
     n_ex = st.one("select count(*) n from staging_record where state='excluded'")["n"]
     rep.say("DB", f"{MONTH} 확정 {n_can}건 (그중 AI 추출값 {n_ai}건, 사람이 고친 값 {n_edit}건), 제외 {n_ex}건")
+    ctx.facts = {"confirmed": n_can, "confirmed_from_ai": n_ai, "human_edited": n_edit, "excluded": n_ex}

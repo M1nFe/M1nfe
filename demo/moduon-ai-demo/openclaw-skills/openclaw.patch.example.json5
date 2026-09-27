@@ -1,0 +1,13 @@
+// OpenClaw 설정 패치 예시. 복사한 뒤 extraDirs 경로를 이 저장소의 실제 절대경로로 바꾸고:
+//   openclaw config patch --file ./openclaw.patch.json5
+//   openclaw skills info moduon-ai-demo
+{
+  skills: {
+    load: { extraDirs: ["/ABSOLUTE/PATH/TO/M1nfe/demo/moduon-ai-demo/openclaw-skills"] },
+    entries: {
+      "moduon-ai-demo": { enabled: true, apiKey: { source: "env", provider: "default", id: "ANTHROPIC_API_KEY" } },
+    },
+  },
+  // (선택) OpenClaw 에이전트 자신의 모델도 Haiku 4.5로 쓰려면
+  agents: { defaults: { model: { primary: "anthropic/claude-haiku-4-5" } } },
+}

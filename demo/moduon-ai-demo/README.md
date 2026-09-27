@@ -37,31 +37,83 @@ AI 결과는 모두 `staging_*`(검수 전) 테이블까지만 갑니다.
 
 ```bash
 cd demo/moduon-ai-demo
-python -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-
-python run_demo.py            # 자동: API 키가 있으면 live, 없으면 녹화본(replay), 녹화본도 없으면 mock
-python run_demo.py --pause    # 발표용: 단계마다 Enter를 기다림
+./run.sh                      # 처음에 .venv를 만들고 패키지 설치. 이후 자동 모드로 시연
+./run.sh --pause              # 발표용: 단계마다 Enter를 기다림
+./run.sh test                 # 테스트 (API 키 불필요)
 ```
+
+`run.sh`는 `.venv`를 만든 뒤 `run_demo.py`에 인자를 그대로 넘깁니다. 직접 실행하려면 `pip install -r requirements.txt` 후 `python run_demo.py ...`를 쓰면 됩니다.
 
 | 모드 | 명령 | 설명 |
 |---|---|---|
-| **live** | `ANTHROPIC_API_KEY=... python run_demo.py --mode live` | 실제 Claude(`claude-opus-5`) 호출. 응답은 `recordings/`에 녹화됩니다. 1회 실행에 8번 호출하며, 비용은 대략 1달러 미만으로 추정합니다(실행이 끝나면 실제 토큰·비용이 표시됨). |
-| **replay** | `python run_demo.py --mode replay` | 녹화된 **실제 응답**을 재생합니다. 키 없이, 인터넷 없이 시연할 때 씁니다. |
-| **mock** | `python run_demo.py --mode mock` | 사람이 미리 써 둔 **모의 응답**입니다. 실제 AI 결과가 아니며 화면에 계속 그렇게 표시됩니다. 코드 검증, DB 권한, 계산은 실제로 실행됩니다. |
+| **live** | `ANTHROPIC_API_KEY=... ./run.sh --mode live` | 실제 Claude 호출. 응답은 `recordings/<모델>/`에 녹화됩니다. 1회 실행에 8번 호출하고, 끝나면 실제 토큰·시간·비용이 표시됩니다. |
+| **replay** | `./run.sh --mode replay` | 녹화된 **실제 응답**을 재생합니다. 키 없이, 인터넷 없이 시연할 때 씁니다. |
+| **mock** | `./run.sh --mode mock` | 사람이 미리 써 둔 **모의 응답**입니다. 실제 AI 결과가 아니며 화면에 계속 그렇게 표시됩니다. 코드 검증, DB 권한, 계산은 실제로 실행됩니다. |
+
+모드를 지정하지 않으면 API 키가 있을 때 live, 없으면 녹화본(replay), 녹화본도 없으면 mock으로 자동 선택합니다.
 
 - **권장 순서:** 시연 전에 live로 한 번 실행해 녹화합니다. 발표 때는 `--mode replay --pause`로 진행합니다.
-- **기록 파일:** 실행이 끝나면 `output/demo_report_<모드>.md`가 생깁니다. AI에게 보낸 원문(시스템 프롬프트, 보낸 내용, JSON Schema)과 응답이 모두 들어 있습니다.
+- **결과 파일:** 실행이 끝나면 `output/`에 두 파일이 생깁니다.
+  - `demo_report_<모델>_<모드>.md`: AI에게 보낸 원문(시스템 프롬프트, 보낸 내용, JSON Schema)과 응답 전체
+  - `demo_summary_<모델>_<모드>.json`: AI가 한 일, 정답 대조, 토큰·시간·비용, DB 결과 요약. OpenClaw 같은 에이전트가 읽고 보고하는 용도입니다.
 
-기타 옵션:
-- `--no-fallback`: 서버측 refusal fallback(beta `server-side-fallback-2026-07-01`)을 끕니다. 계정에서 이 beta가 거부되면 사용하세요.
-- `--no-tamper`: 'AI가 값을 잘못 읽었다면?' 가상 검증 시연을 건너뜁니다.
+### 모델 — 기본은 Haiku 4.5
 
-테스트는 API 키 없이 돕니다.
+| 모델 | 옵션 | 단가(입력/출력, 1M 토큰) | 추론 설정 |
+|---|---|---|---|
+| **Claude Haiku 4.5 (기본)** | `--model claude-haiku-4-5` | $1 / $5 | 단순 작업은 thinking 끔. PDF 추출만 thinking 예산 2,048토큰. `effort` 파라미터는 Haiku 4.5가 받지 않아 쓰지 않습니다. |
+| Claude Sonnet 5 | `--model claude-sonnet-5` | $2 / $10 | adaptive thinking + effort |
+| Claude Opus 5 | `--model claude-opus-5` | $5 / $25 | adaptive thinking + effort. 안전 분류기 거절에 대비한 서버측 fallback(`fallbacks="default"`) 사용 |
+
+- Haiku 4.5로 1회 실행하면 수 센트 수준으로 추정합니다. 실제 값은 실행 후 표시됩니다.
+- Haiku 4.5는 프롬프트 캐시 최소 길이가 4,096토큰이라, 이 시연의 짧은 프롬프트는 캐시되지 않습니다(오류는 아님).
+
+**Haiku로 충분한지 숫자로 확인하기:**
 
 ```bash
-python -m pytest
+ANTHROPIC_API_KEY=... ./run.sh compare                                   # Haiku 4.5 vs Opus 5
+./run.sh compare --models claude-haiku-4-5 claude-sonnet-5 claude-opus-5
+./run.sh compare --mode replay                                           # 녹화본끼리(키 불필요)
 ```
+
+같은 시연을 모델별로 돌려서 기능별 정답 대조, 토큰, 응답 시간, 비용을 한 표로 보여 줍니다(`output/model_comparison.md`). 정답표가 작은 시연용이라, 운영 결정은 실제 골든셋으로 다시 확인해야 합니다.
+
+### OpenClaw로 실행
+
+`openclaw-skills/moduon-ai-demo/SKILL.md`는 OpenClaw 스킬입니다. 연결하면 채팅(텔레그램, 웹 등)에서 "모두온 AI 시연 돌려줘", "하이쿠랑 오퍼스 비교해줘"라고 하면 OpenClaw가 `run.sh`를 실행하고 요약 JSON을 읽어 보고합니다. OpenClaw 2026.9.6에서 `✓ Ready`로 인식되는 것을 확인했습니다.
+
+1. 설정 패치 파일을 만듭니다. `openclaw-skills/openclaw.patch.example.json5`를 복사한 뒤 `extraDirs` 경로를 이 저장소의 실제 경로로 바꿉니다.
+
+   ```json5
+   {
+     skills: {
+       load: { extraDirs: ["/절대경로/M1nfe/demo/moduon-ai-demo/openclaw-skills"] },
+       entries: {
+         "moduon-ai-demo": { enabled: true, apiKey: { source: "env", provider: "default", id: "ANTHROPIC_API_KEY" } },
+       },
+     },
+     // (선택) OpenClaw 에이전트 자신도 Haiku 4.5로
+     agents: { defaults: { model: { primary: "anthropic/claude-haiku-4-5" } } },
+   }
+   ```
+
+2. 적용하고 확인합니다.
+
+   ```bash
+   openclaw config patch --file ./openclaw.patch.json5
+   openclaw skills info moduon-ai-demo      # "✓ Ready" 확인
+   ```
+
+3. 채팅에서 `/moduon-ai-demo`로 부르거나 "모두온 AI 시연 돌려줘"라고 말합니다. 새 스킬이 안 보이면 `/new`로 새 세션을 시작합니다.
+
+- **키 주입:** `apiKey`는 OpenClaw가 실행될 때 `ANTHROPIC_API_KEY`를 스킬 실행 환경에 넣어 줍니다. OpenClaw를 샌드박스(Docker)로 돌리면 키가 들어가지 않으므로 샌드박스에 따로 넣어야 합니다.
+- **실행 승인:** OpenClaw의 exec 승인 설정에 따라 `bash .../run.sh` 실행 전에 승인을 물을 수 있습니다.
+- **비용 관리:** 스킬은 live·compare처럼 비용이 드는 실행을 사용자가 요청했을 때만 하도록 적혀 있습니다.
+
+기타 옵션:
+- `--quiet`: 화면 출력 없이 결과 파일만 만듭니다(에이전트용).
+- `--no-fallback`: Opus 5의 서버측 fallback beta를 끕니다. 계정에서 이 beta가 거부되면 쓰세요.
+- `--no-tamper`: 'AI가 값을 잘못 읽었다면?' 가상 검증 시연을 건너뜁니다.
 
 ## 4. 시연 장면
 
@@ -89,9 +141,12 @@ python -m pytest
 ## 6. 파일 구조
 
 ```
-run_demo.py                 실행기
+run.sh                      실행 스크립트(.venv 자동 설치, compare/test 하위 명령)
+run_demo.py                 실행기 (--mode, --model, --quiet)
+compare_models.py           모델 비교
+openclaw-skills/            OpenClaw 스킬(SKILL.md) + 설정 예시
 moduon_demo/
-  llm.py                    Claude 호출은 전부 여기 (live / replay / mock, 녹화, 비용)
+  llm.py                    Claude 호출은 전부 여기 (모델별 설정, live / replay / mock, 녹화, 비용)
   ai/                       ← AI를 부르는 코드: 시스템 프롬프트 + 출력 JSON Schema
     header_map.py  extract_doc.py  match_judge.py  anomaly_explain.py  notice_parse.py  nlq_parse.py
   rules/                    ← AI 없음: 파싱·정규화·검증·매칭 규칙·이상 규칙·고정 조회
@@ -101,6 +156,6 @@ moduon_demo/
   console.py                터미널 출력 + 보고서
 data/                       가상 샘플(엑셀·PDF·메일), 상품 마스터, 9월 확정 단가, 정답표
 mock_responses/             모의 응답 (실제 AI 아님)
-recordings/                 live 실행 시 실제 응답 녹화본
+recordings/<모델>/           live 실행 시 실제 응답 녹화본
 tests/                      규칙·방화벽·계산·live 호출 경로(가짜 HTTP)·전체 파이프라인(mock)
 ```
