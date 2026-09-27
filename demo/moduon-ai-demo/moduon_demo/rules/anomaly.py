@@ -9,8 +9,11 @@ FIELD_RANGES = {
     "registration_fee": (0, 300_000),
     "monthly_installment": (10_000, 150_000),
     "installment_count": (12, 240),
+    "rebate": (0, 1_500_000),
 }
-ZERO_OK = {"subsidy_amount", "registration_fee"}
+ZERO_OK = {"subsidy_amount", "registration_fee", "rebate"}
+# 정산 금액: 바뀌면 규칙 위반이 없어도 자동 반영하지 않고 항상 사람이 승인한다 (설계서 4.2.1)
+SETTLEMENT_FIELDS = {"rebate"}
 JUMP_THRESHOLD = 0.20
 
 

@@ -75,3 +75,4 @@ def test_anomaly_rules():
     assert codes(anomaly.check("subsidy_amount", 350000, 200000)) == {"PRICE_JUMP"}
     assert anomaly.check("monthly_rental_fee", 29900, 32900) == []
     assert codes(anomaly.check("monthly_fee", 69000, 0)) >= {"NEG_OR_ZERO"}
+    assert anomaly.check("rebate", 350000, 400000) == [] and "rebate" in anomaly.SETTLEMENT_FIELDS

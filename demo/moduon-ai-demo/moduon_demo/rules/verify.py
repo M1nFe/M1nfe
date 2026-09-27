@@ -28,7 +28,7 @@ class CheckResult:
 # ---------- ① 엑셀 헤더 매핑 제안 검증 ----------
 
 REQUIRED_TELECOM_FIELDS = {"product_name"}
-PRICE_FIELDS = {"device_price", "monthly_fee", "subsidy_amount"}
+PRICE_FIELDS = {"device_price", "monthly_fee", "subsidy_amount", "rebate"}
 
 
 def verify_header_mapping(grid: dict, ai: dict) -> CheckResult:

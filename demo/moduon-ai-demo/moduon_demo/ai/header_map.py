@@ -4,7 +4,7 @@ AI가 받는 것: 시트의 처음 몇 행(열 제목 + 샘플 행)만. 파일 �
 AI가 돌려주는 것: 열마다 표준 필드 이름·단위·조건 문구. 값은 읽지 않는다(값은 승인된 매핑으로 코드가 읽음).
 """
 
-FIELDS = ["product_name", "model_code", "device_price", "monthly_fee", "subsidy_amount", "memo", "ignore"]
+FIELDS = ["product_name", "model_code", "device_price", "monthly_fee", "subsidy_amount", "rebate", "memo", "ignore"]
 
 SYSTEM = """너는 모두온 데이터 수집 파이프라인의 '엑셀 헤더 매핑 제안' 담당이다.
 파트너가 보낸 엑셀의 열 제목을 모두온 표준 필드에 대응시키는 '제안'만 한다. 값을 계산하거나 고치거나 추론하지 않는다.
@@ -15,6 +15,7 @@ SYSTEM = """너는 모두온 데이터 수집 파이프라인의 '엑셀 헤더 
 - device_price: 단말 출고가
 - monthly_fee: 요금제 월정액
 - subsidy_amount: 공시지원금
+- rebate: 리베이트·판매장려금(통신사가 판매점에 주는 정산 금액)
 - memo: 비고/메모(숫자가 아닌 설명)
 - ignore: 번호 등 필요 없는 열
 

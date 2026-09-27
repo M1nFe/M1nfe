@@ -38,6 +38,11 @@ def test_full_demo_mock():
     # 계산은 확정값만 사용: S24+ 월정액은 9월 확정값 69,000원
     r = st.one("select inputs from calc_result where product_id='P003'")
     assert json.loads(r["inputs"])["monthly_fee"] == 69000
+    # 리베이트: 엑셀 I열에서 읽혀 사람 승인 후 확정되고, 자연어 조회로 변동을 볼 수 있다
+    reb = st.one("select value_int, approved_by from canonical_price where month='2026-10' and product_id='P003' "
+                 "and field_code='rebate' and condition_key='join=mnp'")
+    assert reb["value_int"] == 400000 and reb["approved_by"] == "검수자(시뮬레이션)"
+    assert ctx.metrics["① 자료 읽기(엑셀)"] == [9, 9] and ctx.metrics["④ 자연어처리(조회)"] == [4, 4]
     # 모든 확정 반영은 검수자(사람) 이름으로 기록
     assert st.one("select count(*) n from canonical_price where month='2026-10' and approved_by != '검수자(시뮬레이션)'")["n"] == 0
 
@@ -66,10 +71,12 @@ def _fixture(name):
 
 
 def test_real_qwen_outputs_scoring(monkeypatch):
-    """실제 qwen2.5:7b 응답: A열(No)을 목록에서 뺀 매핑은 8/8로, 후보를 하나도 고르지 않은 매칭은 0/6으로 채점."""
+    """실제 qwen2.5:7b 응답: A열(No)을 목록에서 뺀 매핑은 정답(ignore)으로, 후보를 하나도 고르지 않은 매칭은 0/6으로 채점.
+
+    이 응답은 리베이트(I열)를 추가하기 전 파일로 녹화되어 I열이 없다 → I열 1개만 틀려 8/9."""
     ctx = _run_until_matching(monkeypatch, {"e2_header_map": _fixture("e2_header_map"),
                                             "m4_match_judge": _fixture("m4_match_judge")})
-    assert ctx.metrics["① 자료 읽기(엑셀)"] == [8, 8]
+    assert ctx.metrics["① 자료 읽기(엑셀)"] == [8, 9]
     assert ctx.metrics["② 상품명 매칭"] == [0, 6]
     assert ctx.metrics["(비교) 유사도 1순위만 사용"] == [5, 6]
     # 모델이 틀려도 사람(정답표) 확정 단계에서 바로잡혀 staging 매칭은 정답과 같다

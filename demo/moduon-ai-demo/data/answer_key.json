@@ -9,7 +9,8 @@
     "E": {"field_code": "monthly_fee", "condition_key": "contract=24"},
     "F": {"field_code": "subsidy_amount", "condition_key": "join=mnp"},
     "G": {"field_code": "subsidy_amount", "condition_key": "join=chg"},
-    "H": {"field_code": "memo"}
+    "H": {"field_code": "memo"},
+    "I": {"field_code": "rebate", "condition_key": "join=mnp"}
   },
   "pdf_values": {
     "퓨어워터 WP500 냉온": {"monthly_rental_fee": 36900, "mandatory_months": 60, "registration_fee": 100000},
@@ -35,6 +36,8 @@
      "intent": "price_change_list", "params": {"category": "appliance", "direction": "up"}},
     {"question": "A통신 번호이동 공시지원금이 30만원 이상인 단말 보여줘",
      "intent": "price_lookup", "params": {"partner": "A통신", "field": "subsidy_amount", "condition": "join=mnp", "op": "gte", "amount": 300000}},
+    {"question": "지난달보다 리베이트가 오른 통신 단말 알려줘",
+     "intent": "price_change_list", "params": {"category": "telecom", "field": "rebate", "direction": "up"}},
     {"question": "이번 달 A통신 정산금 총액 계산해줘",
      "intent": "unsupported", "params": {}}
   ]

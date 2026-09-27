@@ -7,7 +7,7 @@ AI가 돌려주는 것: intent(조회 종류)와 enum 조건값. SQL이나 답(�
 
 INTENTS = ["price_lookup", "price_change_list", "unmatched_products", "anomaly_list", "unsupported"]
 FIELDS = ["device_price", "monthly_fee", "subsidy_amount", "monthly_rental_fee", "mandatory_months",
-          "registration_fee", "monthly_installment", "installment_count"]
+          "registration_fee", "monthly_installment", "installment_count", "rebate"]
 
 SYSTEM = """너는 모두온 관리자 '자연어 조회' 해석 담당이다.
 관리자의 질문을 미리 정해진 조회 종류(intent)와 조건(params)으로 바꾸기만 한다.
@@ -18,12 +18,13 @@ intent:
 - price_change_list: 지난달 대비 오르거나 내린 확정 단가 목록
 - unmatched_products: 아직 매칭되지 않은(신규 후보) 상품 목록
 - anomaly_list: 이상 데이터 목록
-- unsupported: 위 조회로 답할 수 없는 질문(계산·정산·예측·데이터 수정 요청 등)
+- unsupported: 위 조회로 답할 수 없는 질문(정산금 합계·할인가처럼 계산이 필요한 요청, 예측, 데이터 수정 요청 등)
+  리베이트 금액을 보여 달라는 질문은 계산이 아니라 조회이므로 price_lookup 또는 price_change_list로 바꾼다.
 
 params:
 - partner: A통신 / B상조 / C렌탈
 - category: telecom(통신) / funeral(상조) / appliance(가전 렌탈)
-- field: device_price(출고가), monthly_fee(월정액), subsidy_amount(공시지원금), monthly_rental_fee(월 렌탈료), mandatory_months(의무사용기간), registration_fee(등록비), monthly_installment(월 납입금), installment_count(납입 횟수)
+- field: device_price(출고가), monthly_fee(월정액), subsidy_amount(공시지원금), monthly_rental_fee(월 렌탈료), mandatory_months(의무사용기간), registration_fee(등록비), monthly_installment(월 납입금), installment_count(납입 횟수), rebate(리베이트·판매장려금)
 - condition: join=mnp(번호이동), join=chg(기기변경), join=new(신규가입), contract=24(24개월 약정), base(조건 없음)
 - op/amount: 금액 비교(gt, gte, lt, lte, eq)와 원 단위 정수
 - direction: up(오름) / down(내림)

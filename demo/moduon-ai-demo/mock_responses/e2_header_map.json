@@ -60,6 +60,13 @@
         "field_code": "memo",
         "unit": "none",
         "condition_phrase": null
+      },
+      {
+        "col": "I",
+        "source_header": "리베이트(번호이동)",
+        "field_code": "rebate",
+        "unit": "KRW",
+        "condition_phrase": "번호이동"
       }
     ],
     "unmapped_notes": [

@@ -18,7 +18,7 @@ from moduon_demo.llm import LLM, AIError
 
 ROOT = Path(__file__).resolve().parent.parent
 MOCK = {p.stem: json.loads(p.read_text(encoding="utf-8"))["output"] for p in (ROOT / "mock_responses").glob("*.json")}
-NLQ = {"렌탈료가 오른": "q1_nlq", "30만원 이상": "q2_nlq", "정산금": "q3_nlq"}
+NLQ = {"렌탈료가 오른": "q1_nlq", "30만원 이상": "q2_nlq", "리베이트가 오른": "q3_nlq", "정산금": "q4_nlq"}
 
 
 def _pick_mock(body) -> dict:
@@ -164,10 +164,10 @@ def test_full_demo_through_fake_ollama(tmp_path, fake, monkeypatch):
     ctx, report, summary = run_demo.run("live", provider="ollama", base_url=srv.url, quiet=True)
     s = json.loads(summary.read_text(encoding="utf-8"))
     assert s["completed"] and s["provider"] == "ollama" and s["model"] == "qwen2.5:7b"
-    # 8단계 중 매칭은 상품명 6개를 하나씩 물어서 호출은 모두 13번
-    assert s["totals"]["calls"] == 13 and s["totals"]["cost_usd"] == 0
+    # 9단계 중 매칭은 상품명 6개를 하나씩 물어서 호출은 모두 14번
+    assert s["totals"]["calls"] == 14 and s["totals"]["cost_usd"] == 0
     assert "Ollama 로컬 qwen2.5:7b" in s["mode_label"] and s["warnings"] == []
-    assert len(srv.requests) == 13
+    assert len(srv.requests) == 14
     assert s["accuracy"]["② 상품명 매칭"] == {"ok": 6, "total": 6}
     report.unlink()
     summary.unlink()
