@@ -368,13 +368,13 @@ def scene3_matching(ctx: Ctx):
     rep.table("⚙️ 규칙 단계 결과 (AI 없음)", ["상품명(원문)", "단계", "결과"], rule_rows)
 
     key = ctx.key["matching"]
-    lines, mkeys = [], []
+    blocks, mkeys = [], []
     for i, (m, cands) in enumerate(need_ai, 1):
         mk = f"m{i:02d}"
         mkeys.append(mk)
         mc = m["model_code"] if m["model_code"] and m["model_code"] != "-" else "없음"
-        lines += [f"[{mk}] 파트너: {m['partner']}", f'  원래 이름: "{m["raw_name"]}"', f"  파일의 모델코드: {mc}",
-                  "  후보(유사도 순):"]
+        lines = [f"[{mk}] 파트너: {m['partner']}", f'  원래 이름: "{m["raw_name"]}"', f"  파일의 모델코드: {mc}",
+                 "  후보(유사도 순):"]
         for j, (pid, sim) in enumerate(cands, 1):
             p = cat.products[pid]
             attrs = " / ".join(x for x in [f"모델코드 {p.model_code}" if p.model_code else "",
@@ -382,12 +382,20 @@ def scene3_matching(ctx: Ctx):
                                             f"색상 {COLOR_KO.get(p.color, p.color)}" if p.color else "",
                                             f"옵션 {p.variant}" if p.variant else ""] if x)
             lines.append(f"    c{j}: {p.name}" + (f" ({attrs})" if attrs else ""))
-        lines.append("")
-    block = "\n".join(lines)
+        blocks.append("\n".join(lines))
+    block = "\n\n".join(blocks)
     rep.text_block("AI에게 보내는 내용 (이름 + 코드가 뽑은 후보)", block)
     rep.pause()
 
-    ai = match_judge.run(llm, block, mkeys)
+    if llm.provider == "ollama" and llm.mode != "mock":
+        # 작은 로컬 모델은 한 번에 여러 개를 판단하면 헷갈린다 → 상품명 하나씩 따로 묻는다
+        rep.note(f"로컬 모델이라 상품명 {len(mkeys)}개를 하나씩 따로 묻는다")
+        results = []
+        for mk, b in zip(mkeys, blocks):
+            results += match_judge.run(llm, b, [mk], step_id=f"m4_match_judge__{mk}")["results"]
+        ai = {"results": results}
+    else:
+        ai = match_judge.run(llm, block, mkeys)
     rep.json("🤖 AI 응답 — 후보 선택 제안", ai)
 
     rep.say("코드", "검증: 고른 후보 키가 실제로 준 후보인가, AI가 뽑은 속성이 원래 이름에 실제로 적혀 있는가 → 등급 계산")

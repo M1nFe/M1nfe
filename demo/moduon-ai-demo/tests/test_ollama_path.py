@@ -5,6 +5,7 @@
 """
 import io
 import json
+import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -22,6 +23,9 @@ NLQ = {"렌탈료가 오른": "q1_nlq", "30만원 이상": "q2_nlq", "정산금"
 
 def _pick_mock(body) -> dict:
     sys_text, user = body["messages"][0]["content"], body["messages"][1]["content"]
+    if "상품명 매칭" in sys_text:              # 로컬 모델은 상품명 하나씩 묻는다 → 그 상품의 답만 돌려준다
+        keys = set(re.findall(r"\[(m\d\d)\]", user))
+        return {"results": [r for r in MOCK["m4_match_judge"]["results"] if r["mention_key"] in keys]}
     for key, step in [("헤더 매핑", "e2_header_map"), ("문서 추출", "e3_pdf_extract"), ("상품명 매칭", "m4_match_judge"),
                       ("이상 데이터 설명", "a3_anomaly_explain"), ("공지·메일", "n1_notice_parse")]:
         if key in sys_text:
@@ -160,8 +164,10 @@ def test_full_demo_through_fake_ollama(tmp_path, fake, monkeypatch):
     ctx, report, summary = run_demo.run("live", provider="ollama", base_url=srv.url, quiet=True)
     s = json.loads(summary.read_text(encoding="utf-8"))
     assert s["completed"] and s["provider"] == "ollama" and s["model"] == "qwen2.5:7b"
-    assert s["totals"]["calls"] == 8 and s["totals"]["cost_usd"] == 0
-    assert "Ollama 로컬 qwen2.5:7b" in s["mode_label"]
-    assert len(srv.requests) == 8
+    # 8단계 중 매칭은 상품명 6개를 하나씩 물어서 호출은 모두 13번
+    assert s["totals"]["calls"] == 13 and s["totals"]["cost_usd"] == 0
+    assert "Ollama 로컬 qwen2.5:7b" in s["mode_label"] and s["warnings"] == []
+    assert len(srv.requests) == 13
+    assert s["accuracy"]["② 상품명 매칭"] == {"ok": 6, "total": 6}
     report.unlink()
     summary.unlink()

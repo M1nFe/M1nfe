@@ -25,6 +25,7 @@ class Reporter:
         self.console = Console(width=width, file=file)
         self.pause_enabled = pause
         self.md: list[str] = []
+        self.warnings: list[str] = []
 
     # ---------- 구조 ----------
     def title(self, text: str, sub: str = ""):
@@ -47,6 +48,7 @@ class Reporter:
         self.md.append(f"  - _{text}_")
 
     def warn(self, text: str):
+        self.warnings.append(text)
         self.console.print(Panel(escape(text), border_style="red"))
         self.md += [""] + [f"> {'⚠️ ' if i == 0 else ''}{line}" for i, line in enumerate(text.splitlines())] + [""]
 

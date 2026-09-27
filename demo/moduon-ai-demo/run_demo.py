@@ -49,7 +49,7 @@ def run(mode: str, model: str | None = None, *, provider="anthropic", base_url=N
     tag = f"{model if provider == 'anthropic' else 'ollama__' + _safe_dir(model)}_{mode}"
     report = ROOT / "output" / f"demo_report_{tag}.md"
     summary = ROOT / "output" / f"demo_summary_{tag}.json"
-    ctx = None
+    ctx, completed = None, False
     try:
         llm = LLM(mode, ROOT, rep, model=model, provider=provider, use_fallback=use_fallback, base_url=base_url)
         ctx = scenes.Ctx(root=ROOT, store=Store(), llm=llm, rep=rep,
@@ -57,6 +57,7 @@ def run(mode: str, model: str | None = None, *, provider="anthropic", base_url=N
                          tamper=tamper)
         for scene in SCENES:
             scene(ctx)
+        completed = True
     finally:
         rep.save(report)
         if ctx is not None:
@@ -66,7 +67,8 @@ def run(mode: str, model: str | None = None, *, provider="anthropic", base_url=N
                 "is_real_ai": mode in ("live", "replay"),
                 "provider": provider,
                 "model": model,
-                "completed": len(ctx.llm.calls) == len(scenes.STEP_IDS),
+                "completed": completed,
+                "warnings": rep.warnings,
                 "what_ai_did": [dict(zip(["기능", "AI가 한 일", "AI 결과가 간 곳", "코드 검증", "정답 대조", "사람"], r))
                                 for r in ctx.summary],
                 "accuracy": {k: {"ok": v[0], "total": v[1]} for k, v in ctx.metrics.items()},
@@ -107,8 +109,20 @@ def main():
     except AIError as e:
         print(f"AI 호출 실패: {e}", file=sys.stderr)
         sys.exit(1)
+    print_accuracy(summary)
     print(f"\n전체 기록(AI에게 보낸 원문·응답 포함): {report.relative_to(ROOT)}")
     print(f"요약(JSON): {summary.relative_to(ROOT)}")
+
+
+def print_accuracy(summary: Path):
+    s = json.loads(summary.read_text(encoding="utf-8"))
+    t = s["totals"]
+    print(f"\n[정답 대조 요약] {s['mode_label']} · 모델 {s['model']}")
+    for k, v in s["accuracy"].items():
+        print(f"  {k}: {v['ok']}/{v['total']}")
+    print(f"  AI 호출 {t['calls']}회 · 응답 시간 합계 {t['seconds']}초 · API 비용 ${t['cost_usd']}")
+    if s.get("warnings"):
+        print(f"  ⚠️ 경고 {len(s['warnings'])}건: " + s["warnings"][0][:80])
 
 
 if __name__ == "__main__":

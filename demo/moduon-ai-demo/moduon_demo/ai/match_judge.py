@@ -58,9 +58,9 @@ def schema(mention_keys: list[str]) -> dict:
     }
 
 
-def run(llm, block_text: str, mention_keys: list[str]) -> dict:
+def run(llm, block_text: str, mention_keys: list[str], step_id: str = "m4_match_judge") -> dict:
     content = [{"type": "text", "text": f"<document>\n{block_text}\n</document>\n\n"
                                         "각 상품명에 대해 같은 상품인 후보를 골라라. 모든 상품명(" + ", ".join(mention_keys)
                                         + ")에 대해 하나씩 답한다."}]
-    return llm.run("m4_match_judge", title="상품명 → 후보 중 같은 상품 고르기",
-                   system=SYSTEM, content=content, schema=schema(mention_keys), effort="low")
+    title = "상품명 → 후보 중 같은 상품 고르기" + (f" ({mention_keys[0]})" if len(mention_keys) == 1 else "")
+    return llm.run(step_id, title=title, system=SYSTEM, content=content, schema=schema(mention_keys), effort="low")

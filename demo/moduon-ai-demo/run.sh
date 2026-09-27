@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # 모두온 AI 시연 실행 스크립트 (사람·OpenClaw 스킬 공용)
 #
+#   ./run.sh check                         # 시연 전 점검 (Ollama·모델·녹화본·터미널 폭)
+#   ./run.sh rehearse                      # 리허설: Ollama로 실제 실행하고 응답을 녹화
+#   ./run.sh present                       # 발표: 녹화본 재생, 단계마다 Enter
 #   ./run.sh --mode live --quiet           # 시연 실행 → output/ 에 보고서·요약 JSON
 #   ./run.sh compare                       # 모델 비교 (Haiku 4.5 vs Opus 5)
 #   ./run.sh test                          # 테스트 (API 키 불필요)
@@ -23,6 +26,9 @@ if [ ! -x .venv/bin/python ]; then
 fi
 
 case "${1:-}" in
+  check)    shift; exec .venv/bin/python preflight.py "$@" ;;
+  rehearse) shift; exec .venv/bin/python run_demo.py --provider ollama --mode live "$@" ;;
+  present)  shift; exec .venv/bin/python run_demo.py --provider ollama --mode replay --pause "$@" ;;
   compare) shift; exec .venv/bin/python compare_models.py "$@" ;;
   test)    shift; exec .venv/bin/python -m pytest -q "$@" ;;
   *)       exec .venv/bin/python run_demo.py "$@" ;;
