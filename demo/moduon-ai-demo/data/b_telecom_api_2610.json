@@ -1,0 +1,45 @@
+{
+  "source": "B통신 파트너 전산 API",
+  "request": "GET /v1/devices?month=2026-10",
+  "fetched_at": "2026-10-01T09:00:00+09:00",
+  "items": [
+    {
+      "device_code": "B-SM-S921N-256",
+      "device_name": "갤럭시 S24 256G",
+      "release_price": 1155000,
+      "support": [
+        {
+          "plan_code": "B110",
+          "amount": 700000
+        },
+        {
+          "plan_code": "B90",
+          "amount": 380000
+        },
+        {
+          "plan_code": "B59",
+          "amount": 250000
+        }
+      ]
+    },
+    {
+      "device_code": "B-IP16-256",
+      "device_name": "아이폰16 256G",
+      "release_price": 1400000,
+      "support": [
+        {
+          "plan_code": "B110",
+          "amount": 350000
+        },
+        {
+          "plan_code": "B90",
+          "amount": 280000
+        },
+        {
+          "plan_code": "B59",
+          "amount": 180000
+        }
+      ]
+    }
+  ]
+}

@@ -39,6 +39,28 @@
       },
       {
         "mention_key": "m04",
+        "extracted_attributes": {
+          "storage": "256",
+          "color": null,
+          "variant": null
+        },
+        "reason_ko": "갤S24=갤럭시 S24, 256=256GB로 c1과 같고, 색상은 이름에 없어 비교하지 않음",
+        "decision": "match",
+        "candidate_key": "c1"
+      },
+      {
+        "mention_key": "m05",
+        "extracted_attributes": {
+          "storage": "256",
+          "color": null,
+          "variant": null
+        },
+        "reason_ko": "아이폰16 256은 c1 아이폰 16 256GB와 같고 c2는 128GB라 다름",
+        "decision": "match",
+        "candidate_key": "c1"
+      },
+      {
+        "mention_key": "m06",
         "decision": "match",
         "candidate_key": "c1",
         "extracted_attributes": {
@@ -49,7 +71,7 @@
         "reason_ko": "WP500 냉온은 c1 냉온정과 같은 옵션이며 c2는 냉정이라 다름"
       },
       {
-        "mention_key": "m05",
+        "mention_key": "m07",
         "decision": "match",
         "candidate_key": "c1",
         "extracted_attributes": {
@@ -60,7 +82,7 @@
         "reason_ko": "WP500 냉정은 c1 냉정 모델과 옵션이 같음"
       },
       {
-        "mention_key": "m06",
+        "mention_key": "m08",
         "decision": "match",
         "candidate_key": "c1",
         "extracted_attributes": {

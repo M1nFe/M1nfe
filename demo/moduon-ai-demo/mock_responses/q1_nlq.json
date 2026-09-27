@@ -1,5 +1,5 @@
 {
-  "_설명": "모의 응답 — 실제 Claude 호출 결과가 아닙니다. 응답 형식과 이후 코드 처리를 보여 주려고 사람이 작성했습니다. 실제 결과는 live 모드로 실행하면 recordings/에 녹화됩니다.",
+  "_설명": "모의 응답 — 실제 AI 호출 결과가 아닙니다. 응답 형식과 이후 코드 처리를 보여 주려고 사람이 작성했습니다. 실제 결과는 live 모드로 실행하면 recordings/에 녹화됩니다.",
   "step_id": "q1_nlq",
   "model": null,
   "output": {
@@ -8,9 +8,10 @@
       "partner": null,
       "category": "appliance",
       "field": "monthly_rental_fee",
-      "condition": null,
+      "plan_phrase": null,
+      "join": null,
       "op": null,
-      "amount": null,
+      "amount_text": null,
       "direction": "up"
     },
     "unsupported_reason": null

@@ -10,8 +10,9 @@ from moduon_demo.ai import extract_doc, nlq_parse
 from moduon_demo.console import Reporter
 from moduon_demo.llm import DEFAULT_MODEL, FALLBACK_BETA, LLM, AIError
 
-GOOD = {"intent": "price_lookup", "params": {"partner": "A통신", "category": None, "field": "subsidy_amount",
-                                             "condition": "join=mnp", "op": "gte", "amount": 300000, "direction": None},
+GOOD = {"intent": "price_lookup", "params": {"partner": "A통신", "category": None, "field": "rebate",
+                                             "plan_phrase": "115요금제", "join": "mnp", "op": "gte",
+                                             "amount_text": "50개", "direction": None},
         "unsupported_reason": None}
 
 

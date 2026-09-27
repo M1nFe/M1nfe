@@ -13,22 +13,28 @@ create table staging_mention(id integer primary key, raw_file_id int, partner te
   raw_name text, model_code text, match_state text default 'unmatched', match_path text, product_id text,
   ai_decision text, ai_grade text);
 create table staging_record(id integer primary key, raw_file_id int, mention_id int, partner text,
-  field_code text, condition_key text, value_int int, unit text, value_text text, loc text,
+  plan_id text not null default '', field_code text, condition_key text, value_int int, unit text, value_text text, loc text,
   evidence_text text, extractor text, grade text, checks text, state text default 'extracted',
   human_edited int default 0, note text);
 create table staging_anomaly(id integer primary key, record_id int, rule_code text, severity text,
   reason text, prev_value int, new_value int, ai_cause text, ai_explanation text, status text default 'open');
+create table staging_note(id integer primary key, raw_file_id int, partner text, mention_id int, kind text,
+  text text, state text default 'needs_confirmation');
 create table staging_notice(id integer primary key, raw_file_id int, partner text, change_type text,
   product_ref_raw text, product_id text, new_value_int int, effective_from text, evidence_text text,
   status text default 'needs_confirmation');
 create table canonical_product(id text primary key, category text, vendor text, name text,
   model_code text, storage_gb text, color text, variant text);
 create table canonical_alias(partner text, alias text, product_id text, approved_by text);
-create table canonical_price(id integer primary key, partner text, product_id text, field_code text,
-  condition_key text, value_int int, unit text, month text, source text, approved_by text,
-  unique(partner, product_id, field_code, condition_key, month));
+create table canonical_plan(partner text, plan_id text, name text, monthly_fee int, primary key(partner, plan_id));
+create table canonical_plan_alias(partner text, alias text, plan_id text);
+create table canonical_price(id integer primary key, partner text, product_id text, plan_id text not null default '',
+  field_code text, condition_key text, value_int int, unit text, month text, source text, approved_by text,
+  unique(partner, product_id, plan_id, field_code, condition_key, month));
+create table canonical_note(id integer primary key, partner text, product_id text, text text, month text,
+  source text, approved_by text);
 create table calc_result(id integer primary key, formula text, version text, as_of text, partner text,
-  product_id text, inputs text, result int, input_hash text);
+  product_id text, plan_id text, inputs text, result text, input_hash text);
 create table audit_log(id integer primary key, actor text, action text, detail text);
 """
 
@@ -43,6 +49,8 @@ ROLES = {
     "calc_engine":   {"write": ("calc_",), "no_read": ("staging_", "raw_")},
     # 자연어 조회: 읽기 전용
     "nlq_reader":    {"write": (), "no_read": ("raw_",)},
+    # 요금 설계 화면: 읽기 전용, 확정 데이터와 계산 결과만 볼 수 있다(검수 전 값은 화면에 나갈 수 없다)
+    "screen_reader": {"write": (), "no_read": ("staging_", "raw_")},
 }
 
 _WRITE_ACTIONS = {sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE}

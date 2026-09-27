@@ -6,6 +6,7 @@
     python run_demo.py --mode live                       # Claude API (기본 claude-haiku-4-5, ANTHROPIC_API_KEY 필요)
     python run_demo.py --mode replay --pause             # 녹화본으로 발표(단계마다 Enter)
     python run_demo.py --quiet                           # 화면 출력 없이 결과 파일만(OpenClaw 등 에이전트용)
+    python run_demo.py --mode replay --pause --open-screen   # 장면 9에서 요금 설계 화면을 브라우저로 연다
 """
 import argparse
 import io
@@ -21,9 +22,7 @@ from moduon_demo.llm import DEFAULT_MODELS, LLM, AIError, _safe_dir
 from moduon_demo.store import Store
 
 ROOT = Path(__file__).resolve().parent
-SCENES = (scenes.scene0_setup, scenes.scene1_excel, scenes.scene2_pdf, scenes.scene3_matching,
-          scenes.scene4_anomaly, scenes.scene5_notice, scenes.scene6_confirm_and_calc,
-          scenes.scene7_nlq, scenes.scene8_summary)
+SCENES = scenes.SCENES
 
 
 def rec_folder(provider: str, model: str) -> Path:
@@ -42,7 +41,7 @@ def detect_mode(provider: str, model: str) -> str:
 
 
 def run(mode: str, model: str | None = None, *, provider="anthropic", base_url=None, pause=False, quiet=False,
-        width=None, use_fallback=True, tamper=True):
+        width=None, use_fallback=True, tamper=True, open_screen=False):
     """시연 전체를 실행하고 (ctx, 보고서 경로, 요약 JSON 경로)를 돌려준다."""
     model = model or DEFAULT_MODELS[provider]
     rep = Reporter(pause=pause and not quiet, width=width, file=io.StringIO() if quiet else None)
@@ -54,7 +53,7 @@ def run(mode: str, model: str | None = None, *, provider="anthropic", base_url=N
         llm = LLM(mode, ROOT, rep, model=model, provider=provider, use_fallback=use_fallback, base_url=base_url)
         ctx = scenes.Ctx(root=ROOT, store=Store(), llm=llm, rep=rep,
                          key=json.loads((ROOT / "data/answer_key.json").read_text(encoding="utf-8")),
-                         tamper=tamper)
+                         tamper=tamper, tag=tag, open_screen=open_screen and not quiet)
         for scene in SCENES:
             scene(ctx)
         completed = True
@@ -98,6 +97,7 @@ def main():
     ap.add_argument("--no-fallback", action="store_true", help="서버측 refusal fallback beta를 끔(Opus 5에서만 쓰임)")
     ap.add_argument("--no-tamper", action="store_true", help="'AI 오독 가상 상황' 검증 시연을 건너뜀")
     ap.add_argument("--width", type=int, help="터미널 출력 폭")
+    ap.add_argument("--open-screen", action="store_true", help="장면 9에서 요금 설계 화면(HTML)을 브라우저로 연다")
     args = ap.parse_args()
 
     model = args.model or DEFAULT_MODELS[args.provider]
@@ -105,13 +105,16 @@ def main():
     try:
         _, report, summary = run(mode, model, provider=args.provider, base_url=args.base_url, pause=args.pause,
                                  quiet=args.quiet, width=args.width, use_fallback=not args.no_fallback,
-                                 tamper=not args.no_tamper)
+                                 tamper=not args.no_tamper, open_screen=args.open_screen)
     except AIError as e:
         print(f"AI 호출 실패: {e}", file=sys.stderr)
         sys.exit(1)
     print_accuracy(summary)
     print(f"\n전체 기록(AI에게 보낸 원문·응답 포함): {report.relative_to(ROOT)}")
     print(f"요약(JSON): {summary.relative_to(ROOT)}")
+    screen = json.loads(summary.read_text(encoding="utf-8")).get("db", {}).get("screen")
+    if screen:
+        print(f"요금 설계 화면(HTML): {screen}")
 
 
 def print_accuracy(summary: Path):

@@ -20,9 +20,13 @@ _KRW = re.compile(
 )
 
 
-def parse_krw(text: str) -> int | None:
-    """'36,900원' → 36900, '2만5,900원' → 25900, '3.3만' → 33000, '면제' → 0. 해석 불가면 None."""
+def parse_krw(text: str, gae: bool = False) -> int | None:
+    """'36,900원' → 36900, '2만5,900원' → 25900, '3.3만' → 33000, '면제' → 0. 해석 불가면 None.
+
+    gae=True: 리베이트 업계 표기 '55개'(1개 = 1만원)를 550,000으로 읽는다. 리베이트 문맥에서만 켠다."""
     t = compact(text).removesuffix("원")
+    if gae and re.fullmatch(r"\d+(?:\.\d+)?개", t):
+        return int(round(float(t[:-1]) * 10_000))
     if t in _ZERO_WORDS or t == "0":
         return 0
     m = _KRW.match(t)

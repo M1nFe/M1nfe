@@ -1,76 +1,128 @@
 {
-  "_설명": "모의 응답 — 실제 Claude 호출 결과가 아닙니다. 응답 형식과 이후 코드 처리를 보여 주려고 사람이 작성했습니다. 실제 결과는 live 모드로 실행하면 recordings/에 녹화됩니다.",
+  "_설명": "모의 응답 — 실제 AI 호출 결과가 아닙니다. 응답 형식과 이후 코드 처리를 보여 주려고 사람이 작성했습니다. 실제 결과는 live 모드로 실행하면 recordings/에 녹화됩니다.",
   "step_id": "e2_header_map",
   "model": null,
   "output": {
-    "header_row": 4,
+    "header_rows": [
+      4,
+      5
+    ],
     "mappings": [
       {
         "col": "A",
         "source_header": "No",
         "field_code": "ignore",
         "unit": "none",
-        "condition_phrase": null
+        "plan_phrase": null,
+        "join_phrase": null
       },
       {
         "col": "B",
         "source_header": "모델명",
         "field_code": "model_code",
         "unit": "none",
-        "condition_phrase": null
+        "plan_phrase": null,
+        "join_phrase": null
       },
       {
         "col": "C",
         "source_header": "펫네임",
         "field_code": "product_name",
         "unit": "none",
-        "condition_phrase": null
+        "plan_phrase": null,
+        "join_phrase": null
       },
       {
         "col": "D",
         "source_header": "출고가",
         "field_code": "device_price",
         "unit": "KRW",
-        "condition_phrase": null
+        "plan_phrase": null,
+        "join_phrase": null
       },
       {
         "col": "E",
-        "source_header": "월정액(24개월약정)",
-        "field_code": "monthly_fee",
-        "unit": "KRW",
-        "condition_phrase": "24개월약정"
+        "source_header": "공시지원금 / 115요금제",
+        "field_code": "subsidy_amount",
+        "unit": "KRW_10K",
+        "plan_phrase": "115요금제",
+        "join_phrase": null
       },
       {
         "col": "F",
-        "source_header": "공시지원금(번호이동)",
+        "source_header": "공시지원금 / 89요금제",
         "field_code": "subsidy_amount",
-        "unit": "KRW",
-        "condition_phrase": "번호이동"
+        "unit": "KRW_10K",
+        "plan_phrase": "89요금제",
+        "join_phrase": null
       },
       {
         "col": "G",
-        "source_header": "공시지원금(기기변경)",
+        "source_header": "공시지원금 / 55요금제",
         "field_code": "subsidy_amount",
-        "unit": "KRW",
-        "condition_phrase": "기기변경"
+        "unit": "KRW_10K",
+        "plan_phrase": "55요금제",
+        "join_phrase": null
       },
       {
         "col": "H",
-        "source_header": "비고",
-        "field_code": "memo",
-        "unit": "none",
-        "condition_phrase": null
+        "source_header": "리베이트(번호이동) / 115요금제",
+        "field_code": "rebate",
+        "unit": "KRW_10K",
+        "plan_phrase": "115요금제",
+        "join_phrase": "번호이동"
       },
       {
         "col": "I",
-        "source_header": "리베이트(번호이동)",
+        "source_header": "리베이트(번호이동) / 89요금제",
         "field_code": "rebate",
-        "unit": "KRW",
-        "condition_phrase": "번호이동"
+        "unit": "KRW_10K",
+        "plan_phrase": "89요금제",
+        "join_phrase": "번호이동"
+      },
+      {
+        "col": "J",
+        "source_header": "리베이트(번호이동) / 55요금제",
+        "field_code": "rebate",
+        "unit": "KRW_10K",
+        "plan_phrase": "55요금제",
+        "join_phrase": "번호이동"
+      },
+      {
+        "col": "K",
+        "source_header": "리베이트(기기변경) / 115요금제",
+        "field_code": "rebate",
+        "unit": "KRW_10K",
+        "plan_phrase": "115요금제",
+        "join_phrase": "기기변경"
+      },
+      {
+        "col": "L",
+        "source_header": "리베이트(기기변경) / 89요금제",
+        "field_code": "rebate",
+        "unit": "KRW_10K",
+        "plan_phrase": "89요금제",
+        "join_phrase": "기기변경"
+      },
+      {
+        "col": "M",
+        "source_header": "리베이트(기기변경) / 55요금제",
+        "field_code": "rebate",
+        "unit": "KRW_10K",
+        "plan_phrase": "55요금제",
+        "join_phrase": "기기변경"
+      },
+      {
+        "col": "N",
+        "source_header": "비고",
+        "field_code": "memo",
+        "unit": "none",
+        "plan_phrase": null,
+        "join_phrase": null
       }
     ],
     "unmapped_notes": [
-      "B열 '모델명'은 값이 SM-S921N 같은 제조사 코드라 model_code로, C열 '펫네임'을 상품명으로 봄"
+      "2행 안내문에 따라 출고가는 원(KRW), 공시지원금·리베이트는 만원(KRW_10K)으로 봄"
     ]
   }
 }

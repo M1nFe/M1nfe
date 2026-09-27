@@ -26,11 +26,11 @@ DEMO="${MODUON_DEMO_DIR:-{baseDir}/../..}"
 | 요청 | 명령 | 비용 |
 |---|---|---|
 | 무료 로컬 모델로 시연(Ollama, 기본 qwen2.5:7b) | `bash "$DEMO/run.sh" --provider ollama --quiet` | 없음(내 PC에서 실행) |
-| 실제 Claude로 시연(기본 모델 Haiku 4.5) | `bash "$DEMO/run.sh" --mode live --quiet` | API 과금(1회 9번 호출) |
+| 실제 Claude로 시연(기본 모델 Haiku 4.5) | `bash "$DEMO/run.sh" --mode live --quiet` | API 과금(1회 10번 호출) |
 | 다른 모델로 시연 | `bash "$DEMO/run.sh" --mode live --model claude-opus-5 --quiet` | API 과금 |
 | 녹화본 재생(키 불필요) | `bash "$DEMO/run.sh" --mode replay --quiet` | 없음 |
 | 모의 실행(실제 AI 아님) | `bash "$DEMO/run.sh" --mode mock --quiet` | 없음 |
-| 모델 비교(Haiku 4.5 vs Opus 5) | `bash "$DEMO/run.sh" compare` | API 과금(모델마다 9번) |
+| 모델 비교(Haiku 4.5 vs Opus 5) | `bash "$DEMO/run.sh" compare` | API 과금(모델마다 10번) |
 | 테스트 | `bash "$DEMO/run.sh" test` | 없음 |
 
 - `--mode live`와 `compare`는 `ANTHROPIC_API_KEY`가 필요하고 돈이 든다. 사용자가 실제 실행이나 비교를 요청했을 때만 쓴다.
@@ -46,7 +46,8 @@ DEMO="${MODUON_DEMO_DIR:-{baseDir}/../..}"
    - `what_ai_did`: 기능별로 "AI가 한 일"과 "정답 대조"를 표로 정리한다.
    - `accuracy`의 `(비교) 유사도 1순위만 사용` 값과 `② 상품명 매칭` 값을 나란히 보여 준다. 규칙·유사도만으로는 부족하고 AI 판정이 필요한 이유가 드러난다.
    - `totals`: 호출 수, 토큰, 시간, 비용(추정)
-   - `db`: 확정 건수, 그중 AI 추출값, 사람이 고친 값, 제외 건수
+   - `db`: 확정 건수, 그중 AI 추출값, 사람이 고친 값·직접 입력한 값, 제외 건수
+   - `db.screen`: 휴대폰 요금 설계 화면(HTML) 경로. 사용자가 열어 볼 수 있게 경로를 알려 준다(셀러 화면에 요금제×가입유형별 리베이트 표시)
 3. 자세한 근거가 필요하면 `report_path`의 마크다운에서 해당 장면만 발췌한다. AI에게 보낸 원문과 응답이 들어 있다.
 4. 모델 비교를 했다면 `$DEMO/output/model_comparison.md`의 표를 그대로 보여 준다.
 

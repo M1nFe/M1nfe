@@ -1,0 +1,98 @@
+{
+  "_설명": "모의 응답 — 실제 AI 호출 결과가 아닙니다. 응답 형식과 이후 코드 처리를 보여 주려고 사람이 작성했습니다. 실제 결과는 live 모드로 실행하면 recordings/에 녹화됩니다.",
+  "step_id": "k2_kakao_parse",
+  "model": null,
+  "output": {
+    "unit_note_text": "(단위: 개 = 만원)",
+    "records": [
+      {
+        "product_ref_raw": "갤S24 256",
+        "join_phrase": "번호이동",
+        "plan_phrase": "플래티넘",
+        "value_text": "55개",
+        "evidence_text": "갤S24 256 : 플래티넘 55개 / 베이직플러스 42개 / 세이브 28개"
+      },
+      {
+        "product_ref_raw": "갤S24 256",
+        "join_phrase": "번호이동",
+        "plan_phrase": "베이직플러스",
+        "value_text": "42개",
+        "evidence_text": "갤S24 256 : 플래티넘 55개 / 베이직플러스 42개 / 세이브 28개"
+      },
+      {
+        "product_ref_raw": "갤S24 256",
+        "join_phrase": "번호이동",
+        "plan_phrase": "세이브",
+        "value_text": "28개",
+        "evidence_text": "갤S24 256 : 플래티넘 55개 / 베이직플러스 42개 / 세이브 28개"
+      },
+      {
+        "product_ref_raw": "아이폰16 256",
+        "join_phrase": "번호이동",
+        "plan_phrase": "플래티넘",
+        "value_text": "45개",
+        "evidence_text": "아이폰16 256 : 플래티넘 45개 / 베이직플러스 35개 / 세이브 20개"
+      },
+      {
+        "product_ref_raw": "아이폰16 256",
+        "join_phrase": "번호이동",
+        "plan_phrase": "베이직플러스",
+        "value_text": "35개",
+        "evidence_text": "아이폰16 256 : 플래티넘 45개 / 베이직플러스 35개 / 세이브 20개"
+      },
+      {
+        "product_ref_raw": "아이폰16 256",
+        "join_phrase": "번호이동",
+        "plan_phrase": "세이브",
+        "value_text": "20개",
+        "evidence_text": "아이폰16 256 : 플래티넘 45개 / 베이직플러스 35개 / 세이브 20개"
+      },
+      {
+        "product_ref_raw": "갤S24 256",
+        "join_phrase": "기기변경",
+        "plan_phrase": "플래티넘",
+        "value_text": "38개",
+        "evidence_text": "갤S24 256 : 플래티넘 38개 / 베이직플러스 30개 / 세이브 18개"
+      },
+      {
+        "product_ref_raw": "갤S24 256",
+        "join_phrase": "기기변경",
+        "plan_phrase": "베이직플러스",
+        "value_text": "30개",
+        "evidence_text": "갤S24 256 : 플래티넘 38개 / 베이직플러스 30개 / 세이브 18개"
+      },
+      {
+        "product_ref_raw": "갤S24 256",
+        "join_phrase": "기기변경",
+        "plan_phrase": "세이브",
+        "value_text": "18개",
+        "evidence_text": "갤S24 256 : 플래티넘 38개 / 베이직플러스 30개 / 세이브 18개"
+      },
+      {
+        "product_ref_raw": "아이폰16 256",
+        "join_phrase": "기기변경",
+        "plan_phrase": "플래티넘",
+        "value_text": "32개",
+        "evidence_text": "아이폰16 256 : 플래티넘 32개 / 베이직플러스 24개 / 세이브 12개"
+      },
+      {
+        "product_ref_raw": "아이폰16 256",
+        "join_phrase": "기기변경",
+        "plan_phrase": "베이직플러스",
+        "value_text": "24개",
+        "evidence_text": "아이폰16 256 : 플래티넘 32개 / 베이직플러스 24개 / 세이브 12개"
+      },
+      {
+        "product_ref_raw": "아이폰16 256",
+        "join_phrase": "기기변경",
+        "plan_phrase": "세이브",
+        "value_text": "12개",
+        "evidence_text": "아이폰16 256 : 플래티넘 32개 / 베이직플러스 24개 / 세이브 12개"
+      }
+    ],
+    "conditions": [
+      "※ V컬러링 부가서비스 93일 유지 조건, 미유지 시 5개 환수",
+      "※ 정책은 사전 공지 없이 변경될 수 있습니다"
+    ]
+  }
+}

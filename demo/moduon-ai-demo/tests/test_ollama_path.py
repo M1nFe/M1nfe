@@ -18,7 +18,7 @@ from moduon_demo.llm import LLM, AIError
 
 ROOT = Path(__file__).resolve().parent.parent
 MOCK = {p.stem: json.loads(p.read_text(encoding="utf-8"))["output"] for p in (ROOT / "mock_responses").glob("*.json")}
-NLQ = {"렌탈료가 오른": "q1_nlq", "30만원 이상": "q2_nlq", "리베이트가 오른": "q3_nlq", "정산금": "q4_nlq"}
+NLQ = {"렌탈료가 오른": "q1_nlq", "50개 이상": "q2_nlq", "리베이트가 오른": "q3_nlq", "정산금": "q4_nlq"}
 
 
 def _pick_mock(body) -> dict:
@@ -26,7 +26,7 @@ def _pick_mock(body) -> dict:
     if "상품명 매칭" in sys_text:              # 로컬 모델은 상품명 하나씩 묻는다 → 그 상품의 답만 돌려준다
         keys = set(re.findall(r"\[(m\d\d)\]", user))
         return {"results": [r for r in MOCK["m4_match_judge"]["results"] if r["mention_key"] in keys]}
-    for key, step in [("헤더 매핑", "e2_header_map"), ("문서 추출", "e3_pdf_extract"), ("상품명 매칭", "m4_match_judge"),
+    for key, step in [("카톡", "k2_kakao_parse"), ("헤더 매핑", "e2_header_map"), ("문서 추출", "e3_pdf_extract"),
                       ("이상 데이터 설명", "a3_anomaly_explain"), ("공지·메일", "n1_notice_parse")]:
         if key in sys_text:
             return MOCK[step]
@@ -99,7 +99,7 @@ def _llm(tmp_path, url, **kw):
 
 def test_request_shape_and_recording(tmp_path, fake):
     srv = fake()
-    out = nlq_parse.run(_llm(tmp_path, srv.url), "q2_nlq", "A통신 번호이동 공시지원금이 30만원 이상", "2026-10", "2026-09")
+    out = nlq_parse.run(_llm(tmp_path, srv.url), "q2_nlq", "A통신 115요금제 번호이동 리베이트가 50개 이상", "2026-10", "2026-09")
     assert out == MOCK["q2_nlq"]
     body = srv.requests[0]
     assert body["model"] == "qwen2.5:7b" and body["stream"] is False
@@ -164,10 +164,12 @@ def test_full_demo_through_fake_ollama(tmp_path, fake, monkeypatch):
     ctx, report, summary = run_demo.run("live", provider="ollama", base_url=srv.url, quiet=True)
     s = json.loads(summary.read_text(encoding="utf-8"))
     assert s["completed"] and s["provider"] == "ollama" and s["model"] == "qwen2.5:7b"
-    # 9단계 중 매칭은 상품명 6개를 하나씩 물어서 호출은 모두 14번
-    assert s["totals"]["calls"] == 14 and s["totals"]["cost_usd"] == 0
+    # 10단계 중 매칭은 상품명 8개를 하나씩 물어서 호출은 모두 17번
+    assert s["totals"]["calls"] == 17 and s["totals"]["cost_usd"] == 0
     assert "Ollama 로컬 qwen2.5:7b" in s["mode_label"] and s["warnings"] == []
-    assert len(srv.requests) == 14
-    assert s["accuracy"]["② 상품명 매칭"] == {"ok": 6, "total": 6}
+    assert len(srv.requests) == 17
+    assert s["accuracy"]["② 상품명 매칭"] == {"ok": 8, "total": 8}
+    assert s["accuracy"]["① 자료 읽기(카톡)"] == {"ok": 12, "total": 12}
+    (ROOT / s["db"]["screen"]).unlink()
     report.unlink()
     summary.unlink()

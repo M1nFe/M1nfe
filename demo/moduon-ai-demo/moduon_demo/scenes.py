@@ -2,7 +2,7 @@
 
 각 장면은 같은 순서로 진행된다.
   ⚙️ 코드가 입력을 준비 → 🤖 AI 호출(제안) → ⚙️ 코드가 검증 → 📏 정답 대조 → 🙋 사람 확인 → 🗄️ DB 저장
-AI의 출력은 staging(검수 전)까지만 간다. canonical(확정)과 계산에는 AI가 없다.
+AI의 출력은 staging(검수 전)까지만 간다. canonical(확정)·계산·요금 설계 화면에는 AI가 없다.
 """
 import csv
 import hashlib
@@ -10,6 +10,7 @@ import inspect
 import json
 import re
 import sqlite3
+import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -17,29 +18,34 @@ import pdfplumber
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
-from .ai import anomaly_explain, extract_doc, header_map, match_judge, nlq_parse, notice_parse
+from .ai import anomaly_explain, extract_doc, header_map, kakao_parse, match_judge, nlq_parse, notice_parse
 from .calc import engine as calc_engine
 from .calc import formulas
 from .rules import anomaly as anomaly_rules
 from .rules import queries, verify
-from .rules.conditions import CONDITION_LABELS, UnknownCondition, resolve
+from .rules.conditions import CONDITION_LABELS, JOIN_KEYS, PlanBook, UnknownCondition, label, resolve
 from .rules.matching import Catalog, match_grade, verify_attributes
-from .rules.text import parse_count, parse_krw
+from .rules.text import compact, parse_count, parse_krw
+from .screen import rate_design
 
 MONTH, PREV_MONTH = "2026-10", "2026-09"
-STEP_IDS = ["e2_header_map", "e3_pdf_extract", "m4_match_judge", "a3_anomaly_explain",
+STEP_IDS = ["e2_header_map", "k2_kakao_parse", "e3_pdf_extract", "m4_match_judge", "a3_anomaly_explain",
             "n1_notice_parse", "q1_nlq", "q2_nlq", "q3_nlq", "q4_nlq"]
-PARTNER_CATEGORY = {"A통신": "telecom", "B상조": "funeral", "C렌탈": "appliance"}
+PARTNER_CATEGORY = {"A통신": "telecom", "B통신": "telecom", "C통신": "telecom", "B상조": "funeral", "C렌탈": "appliance"}
 FIELD_KO = {
-    "device_price": "출고가", "monthly_fee": "월정액", "subsidy_amount": "공시지원금",
+    "device_price": "출고가", "monthly_fee": "월정액", "subsidy_amount": "공시지원금", "rebate": "리베이트",
     "monthly_rental_fee": "월 렌탈료", "mandatory_months": "의무사용기간", "registration_fee": "등록비",
-    "monthly_installment": "월 납입금", "installment_count": "납입 횟수", "rebate": "리베이트", "other": "기타",
+    "monthly_installment": "월 납입금", "installment_count": "납입 횟수", "other": "기타",
     "product_name": "상품명", "model_code": "모델코드", "memo": "비고", "ignore": "(사용 안 함)",
 }
 FIELD_UNIT = {"monthly_rental_fee": "KRW", "mandatory_months": "month", "registration_fee": "KRW"}
-UNIT_MULT = {"KRW": 1, "KRW_1K": 1_000, "KRW_10K": 10_000, "none": 1}
+UNIT_KO = {"KRW": "원", "KRW_1K": "천원", "KRW_10K": "만원", "none": "-"}
 MARK = {True: "✅", False: "❌", None: "➖"}
 COLOR_KO = {"black": "블랙", "silver": "실버", "white": "화이트"}
+# 원본 종류 → 확정 DB에 남기는 출처 표시
+SOURCE_LABEL = {"xlsx": "엑셀 정책표(AI 열 매핑 → 규칙 파서)", "kakao": "카톡 공지(AI 추출)",
+                "api": "전산 API(규칙)", "csv": "전산 CSV(승인 양식·규칙)", "pdf": "PDF 안내문(AI 추출)"}
+C_TEMPLATE = ["상품코드", "단말명", "출고가", "요금제코드", "공시지원금", "리베이트_번호이동", "리베이트_기기변경"]
 
 
 @dataclass
@@ -50,13 +56,22 @@ class Ctx:
     rep: object
     key: dict
     tamper: bool = True
+    tag: str = "demo"
+    open_screen: bool = False
     summary: list = field(default_factory=list)
     metrics: dict = field(default_factory=dict)   # 기능 → [정답 수, 전체]
     facts: dict = field(default_factory=dict)
+    calc: list = field(default_factory=list)
+    notices: list = field(default_factory=list)
+    screen_path: Path | None = None
 
     @property
     def mock(self) -> bool:
         return self.llm.mode == "mock"
+
+    @property
+    def plans(self) -> PlanBook:
+        return PlanBook.from_db(self.store)
 
 
 def _sha(path: Path) -> str:
@@ -65,6 +80,14 @@ def _sha(path: Path) -> str:
 
 def _won(v) -> str:
     return "-" if v is None else f"{v:,}"
+
+
+def _man(v) -> str:
+    """만원(=개) 단위 표시."""
+    if v is None:
+        return "-"
+    n = v / 10_000
+    return f"{n:,.0f}" if n == int(n) else f"{n:,.1f}"
 
 
 def _acc(ctx, ok: int, total: int) -> str:
@@ -77,7 +100,22 @@ def _fix_particles(text: str) -> str:
     return re.sub(r"원(로|를|는)(?=\s|[.,)(]|$)", lambda m: "원" + {"로": "으로", "를": "을", "는": "은"}[m[1]], text)
 
 
-ARG_KO = {"monthly_fee": "월정액", "device_price": "출고가", "subsidy": "공시지원금(번호이동)",
+def _grade(checks) -> str:
+    if any(c.ok is False for c in checks):
+        return "low"
+    return "high" if all(c.ok for c in checks) else "medium"
+
+
+def _item_label(ctx, partner, field_code, plan_id, cond) -> str:
+    return f"{FIELD_KO[field_code]}({label(ctx.plans, partner, plan_id, cond)})"
+
+
+def _product_name(st, product_id: str) -> str:
+    r = st.one("select name from canonical_product where id=?", (product_id,))
+    return r["name"] if r else product_id
+
+
+ARG_KO = {"monthly_fee": "월정액", "device_price": "출고가", "subsidy": "공시지원금",
           "monthly_rental_fee": "월 렌탈료", "mandatory_months": "의무기간", "registration_fee": "등록비",
           "monthly_installment": "월 납입금", "installment_count": "납입 횟수"}
 
@@ -85,158 +123,347 @@ ARG_KO = {"monthly_fee": "월정액", "device_price": "출고가", "subsidy": "�
 # ─────────────────────────────────────────────────────────────── 장면 0
 def scene0_setup(ctx: Ctx):
     rep, st = ctx.rep, ctx.store
-    rep.title("모두온 AI 시연 — AI가 정확히 무엇을 하는가",
+    rep.title("모두온 AI 시연 — 흩어진 전산을 AI로 모아 요금 설계 화면까지",
               f"모드: {ctx.llm.mode_label} · 모델: {ctx.llm.model} · 기준 월: {MONTH} · 모든 데이터는 가상 샘플")
     if ctx.mock:
-        rep.warn("모의(mock) 모드입니다. AI 응답은 사람이 미리 써 둔 예시이며 실제 Claude 결과가 아닙니다.\n"
-                 "코드 검증·DB 권한·계산은 실제로 실행됩니다. 실제 AI 결과는 --mode live로 실행하세요(Claude 키 또는 Ollama).")
+        rep.warn("모의(mock) 모드입니다. AI 응답은 사람이 미리 써 둔 예시이며 실제 AI 결과가 아닙니다.\n"
+                 "코드 검증·DB 권한·계산·화면은 실제로 실행됩니다. 실제 AI 결과는 --mode live로 실행하세요(Claude 키 또는 Ollama).")
     rep.table("등장 인물", ["표시", "역할"], [
         ["🤖 AI", f"{ctx.llm.display_name}. 읽기·고르기·분류·설명만 한다. 결과는 언제나 '제안'이며 staging(검수 전)에만 저장된다"],
-        ["⚙️ 코드", "규칙·검증·저장을 맡는 결정론 코드. AI 출력을 원문과 대조한다"],
+        ["⚙️ 코드", "규칙·검증·저장을 맡는 결정론 코드. AI 출력을 원문과 대조한다. 양식이 고정된 전산(API·CSV)은 AI 없이 코드가 읽는다"],
         ["🙋 사람", "검수자. 확정(canonical) 권한은 사람에게만 있다 (이 시연에서는 정답표를 아는 검수자 역할로 시뮬레이션)"],
-        ["🗄️ DB", "raw(원본) → staging(검수 전) → canonical(확정) → calc(계산 결과)"],
+        ["🗄️ DB", "raw(원본) → staging(검수 전) → canonical(확정) → calc(계산 결과) → 요금 설계 화면"],
         ["🧮 계산", "고정 공식. AI를 부르지 않고, canonical만 읽는다"],
+    ])
+    rep.table("오늘 모을 전산", ["파트너", "받는 방식", "들어 있는 값", "읽는 주체"], [
+        ["A통신", "엑셀 정책표(처음 보는 양식, 두 줄 제목, 만원 단위)", "출고가·요금제별 공시지원금·요금제×가입유형별 리베이트",
+         "🤖 AI 열 매핑 → ⚙️ 규칙"],
+        ["B통신", "카톡 단가 공지(문장, '개' 단위)", "요금제×가입유형별 리베이트", "🤖 AI 추출 → ⚙️ 검증"],
+        ["B통신", "파트너 전산 API(JSON)", "출고가·요금제별 공시지원금", "⚙️ 규칙(AI 없음)"],
+        ["C통신", "전산 CSV(승인된 양식)", "출고가·공시지원금·리베이트", "⚙️ 규칙(AI 없음)"],
+        ["C렌탈", "PDF 안내문", "월 렌탈료·의무기간·등록비", "🤖 AI 추출 → ⚙️ 검증"],
+        ["B상조", "공지 메일", "납입금 변경·판매 종료", "🤖 AI 구조화(기록만)"],
     ])
     with st.role("setup"):
         for r in csv.DictReader(open(ctx.root / "data/product_master.csv", encoding="utf-8")):
             st.exec("insert into canonical_product values (?,?,?,?,?,?,?,?)",
                     (r["id"], r["category"], r["vendor"], r["name"], r["model_code"],
                      r["storage_gb"], r["color"], r["variant"]))
+        n_plan = 0
+        for r in csv.DictReader(open(ctx.root / "data/plan_master.csv", encoding="utf-8")):
+            st.exec("insert into canonical_plan values (?,?,?,?)", (r["partner"], r["plan_id"], r["name"], int(r["monthly_fee"])))
+            for a in r["aliases"].split("|"):
+                st.exec("insert into canonical_plan_alias values (?,?,?)", (r["partner"], a, r["plan_id"]))
+            n_plan += 1
+        n_alias = 0
         for r in csv.DictReader(open(ctx.root / "data/product_alias.csv", encoding="utf-8")):
             st.exec("insert into canonical_alias values (?,?,?,?)", (r["partner"], r["alias"], r["product_id"], "기존 확정"))
+            n_alias += 1
         n = 0
         for r in csv.DictReader(open(ctx.root / "data/price_2609.csv", encoding="utf-8")):
-            st.exec("insert into canonical_price(partner, product_id, field_code, condition_key, value_int, unit, month,"
-                    " source, approved_by) values (?,?,?,?,?,?,?,?,?)",
-                    (r["partner"], r["product_id"], r["field_code"], r["condition_key"], int(r["value_int"]),
-                     r["unit"], PREV_MONTH, "기존 확정", "기존 확정"))
+            st.exec("insert into canonical_price(partner, product_id, plan_id, field_code, condition_key, value_int, unit,"
+                    " month, source, approved_by) values (?,?,?,?,?,?,?,?,?,?)",
+                    (r["partner"], r["product_id"], r["plan_id"], r["field_code"], r["condition_key"],
+                     int(r["value_int"]), r["unit"], PREV_MONTH, "기존 확정", "기존 확정"))
             n += 1
-    rep.say("DB", f"기존 확정 데이터 적재: 표준 상품 10개, 사람이 승인한 상품명 alias 1개, {PREV_MONTH} 확정 단가 {n}건")
+    rep.say("DB", f"기존 확정 데이터 적재: 표준 상품 10개, 통신 3사 요금제 {n_plan}개, 승인된 상품명·연동 코드 alias {n_alias}개, "
+                  f"{PREV_MONTH} 확정 단가 {n}건")
     rep.pause()
 
 
 # ─────────────────────────────────────────────────────────────── 장면 1
+def _merged_fill(ws) -> dict:
+    """병합 셀의 값을 병합 범위 전체에 채운 사전 {(행, 열문자): 값}. 구조 처리는 코드가 한다."""
+    fill = {}
+    for rng in ws.merged_cells.ranges:
+        v = ws.cell(rng.min_row, rng.min_col).value
+        for r in range(rng.min_row, rng.max_row + 1):
+            for c in range(rng.min_col, rng.max_col + 1):
+                fill[(r, get_column_letter(c))] = v
+    return fill
+
+
+def _short(field_code, plan_id, cond) -> str:
+    kind = {"subsidy_amount": "공시", "device_price": "출고가"}.get(field_code) or \
+        {"join=mnp": "번이", "join=chg": "기변"}.get(cond, FIELD_KO.get(field_code, field_code))
+    return f"{kind} {re.sub(r'^[A-Z]', '', plan_id or '')}".strip()
+
+
+def _describe(x: dict) -> str:
+    if x["field_code"] not in verify.PRICE_FIELDS:
+        return FIELD_KO.get(x["field_code"], x["field_code"])
+    return (f"{FIELD_KO[x['field_code']]} · {x.get('plan_id') or '요금제 무관'} · "
+            f"{CONDITION_LABELS.get(x.get('condition_key'), x.get('condition_key'))} · {UNIT_KO.get(x.get('unit'), x.get('unit'))}")
+
+
 def scene1_excel(ctx: Ctx):
     rep, st, llm = ctx.rep, ctx.store, ctx.llm
-    rep.scene(1, "통신 엑셀 정책표 — 처음 보는 양식 읽기 (AI 기능 ① 자료 읽기)",
-              "새 양식 엑셀의 '열 제목'을 보고 어느 열이 출고가·월정액·공시지원금·리베이트인지 매핑을 제안한다. "
-              "값은 읽지 않는다 — 사람이 매핑을 승인하면 코드가 전체 행의 값을 읽는다.")
+    rep.scene(1, "A통신 엑셀 정책표 — 처음 보는 양식 읽기 (AI 기능 ① 자료 읽기)",
+              "두 줄로 된 열 제목을 보고 열마다 '무슨 값인지(출고가·공시지원금·리베이트), 어느 요금제·가입유형인지, "
+              "단위가 원인지 만원인지'를 제안한다. 값은 읽지 않는다 — 사람이 매핑을 승인하면 코드가 전체 행의 값을 읽는다.")
     path = ctx.root / "data/a_telecom_price_2610.xlsx"
     with st.role("ingest_worker"):
         rid = st.exec("insert into raw_file(partner, kind, filename, sha256) values (?,?,?,?)",
                       ("A통신", "xlsx", path.name, _sha(path)))
     rep.say("코드", f"원본 보관: raw_file #{rid} {path.name} (sha256 {_sha(path)[:12]}…) — 원본은 수정하지 않는다")
     ws = load_workbook(path, data_only=True).active
+    fill = _merged_fill(ws)
     cols = [get_column_letter(c) for c in range(1, ws.max_column + 1)]
-    sample_rows = 9
+    sample_rows = 10
     grid, lines = {}, []
     for r in range(1, sample_rows + 1):
         cells = []
         for L in cols:
-            v = ws[f"{L}{r}"].value
+            v = fill.get((r, L), ws[f"{L}{r}"].value)
             grid[(r, L)] = "" if v is None else str(v)
             if v is not None:
                 cells.append(f"{L}: {v}")
-        lines.append(f"행 {r} | " + " | ".join(cells))
+        if cells:
+            lines.append(f"행 {r} | " + " | ".join(cells))
     grid_text = "\n".join(lines)
     rep.say("코드", "A통신의 승인된 양식 템플릿 검색 → 없음(새 양식) → AI에게 매핑 '제안'을 요청")
-    rep.say("코드", f"AI에게는 처음 {sample_rows}행(제목·열 제목·샘플 5행)만 보낸다. 파일 전체를 보내지 않는다")
+    rep.say("코드", f"AI에게는 처음 {sample_rows}행(제목·안내문·두 줄 열 제목·샘플 5행)만 보낸다. 병합된 칸은 코드가 같은 글자로 채웠다")
     rep.text_block("AI에게 보내는 시트 내용", grid_text)
     rep.pause()
 
     ai = header_map.run(llm, path.name, ws.title, grid_text, cols)
-    rep.json("🤖 AI 응답 — 열 매핑 제안", ai)
+    rep.json("🤖 AI 응답 — 열 매핑 제안", ai, max_lines=40)
 
-    rep.say("코드", "AI 제안을 그대로 믿지 않고 검증한다: 헤더 글자가 실제 칸과 같은가, 조건 문구가 사전에 있는가, 필수 열이 있는가")
-    res = verify.verify_header_mapping(grid, ai)
-    rep.checks("코드 검증 결과", res.checks)
+    rep.say("코드", "AI 제안을 그대로 믿지 않고 열마다 검증한다: 열 제목 글자가 실제 칸과 같은가, 요금제·가입유형 표기가 "
+                   "사전에 있는가, 단위를 적용한 값이 그 항목의 정상 범위인가")
+    plans = ctx.plans
+    hrows = ai["header_rows"]
+    data_rows = range(max(hrows) + 1, sample_rows + 1) if hrows else range(0)
+    colchk, glob = verify.verify_header_mapping(grid, ai, "A통신", plans, data_rows)
+    rep.table("코드 검증 결과 (열별)", ["열", "AI가 적은 열 제목", "제목", "항목", "요금제(사전)", "조건(사전)", "단위",
+                                   "단위 적용 후 중앙값", "범위"],
+              [[c.col, c.source_header, MARK[c.header_ok], FIELD_KO.get(c.field_code, c.field_code),
+                c.plan_detail if c.field_code in verify.PRICE_FIELDS or not c.header_ok else "",
+                c.cond_detail if c.field_code in verify.PRICE_FIELDS else "",
+                UNIT_KO[c.unit] if c.field_code in verify.PRICE_FIELDS else "",
+                f"{_won(c.median_after_unit)}원" if c.median_after_unit is not None else "", MARK[c.range_ok]]
+               for c in colchk])
+    rep.checks("코드 검증 결과 (전체)", glob.checks)
 
-    key, key_row = ctx.key["header_map"], ctx.key["header_row"]
+    key, key_rows = ctx.key["header_map"], ctx.key["header_rows"]
     by_col = {m["col"]: m for m in ai["mappings"]}
     rows, ok_n = [], 0
     for col, exp in key.items():
         m = by_col.get(col)
         missing = m is None
         if missing:                       # AI가 목록에서 뺀 열 = 쓰지 않는 열(ignore)로 본다
-            m = {"field_code": "ignore", "condition_phrase": None}
-        got_cond = "base"
-        if m and m["field_code"] in verify.PRICE_FIELDS:
+            m = {"field_code": "ignore", "plan_phrase": None, "join_phrase": None, "unit": "none"}
+        got = {"field_code": m["field_code"]}
+        if m["field_code"] in verify.PRICE_FIELDS:
             try:
-                got_cond = resolve(m["condition_phrase"])
+                got["plan_id"] = plans.resolve("A통신", m["plan_phrase"])
             except UnknownCondition:
-                got_cond = f"사전에 없음({m['condition_phrase']})"
-        ok = (m["field_code"] == exp["field_code"]
-              and ("condition_key" not in exp or got_cond == exp["condition_key"]))
+                got["plan_id"] = f"사전에 없음({m['plan_phrase']})"
+            try:
+                got["condition_key"] = resolve(m["join_phrase"])
+            except UnknownCondition:
+                got["condition_key"] = f"사전에 없음({m['join_phrase']})"
+            got["unit"] = m["unit"]
+        ok = all(got.get(k) == v for k, v in exp.items())
         ok_n += ok
-        rows.append([col, grid.get((key_row, col)),
-                     "(목록에서 뺌 → 사용 안 함)" if missing else FIELD_KO.get(m["field_code"], m["field_code"]),
-                     CONDITION_LABELS.get(got_cond, got_cond) if "condition_key" in exp else "",
-                     FIELD_KO[exp["field_code"]], MARK[ok]])
-    header_ok = ai["header_row"] == key_row
-    rep.table("📏 정답 대조 (열 제목 → 표준 필드)", ["열", "열 제목", "AI 제안", "조건(사전 해석)", "정답", "일치"], rows)
-    rep.say("정답", f"열 매핑 {_acc(ctx, ok_n, len(key))}, 헤더 행 {'일치' if header_ok else '불일치'}")
+        rows.append([col, verify.compose_header(grid, key_rows, col),
+                     "(목록에서 뺌 → 사용 안 함)" if missing else _describe(got), _describe(exp), MARK[ok]])
+    header_ok = hrows == key_rows
+    rep.table("📏 정답 대조 (열 → 항목·요금제·조건·단위)", ["열", "열 제목", "AI 제안", "정답", "일치"], rows)
+    rep.say("정답", f"열 매핑 {_acc(ctx, ok_n, len(key))}, 열 제목 행 {'일치' if header_ok else '불일치'}")
 
-    all_ok = res.passed and ok_n == len(key) and header_ok
+    all_ok = glob.passed and all(c.passed for c in colchk) and ok_n == len(key) and header_ok
     if all_ok:
         rep.say("사람", "검수자가 매핑 표와 샘플 미리보기를 확인하고 [승인] (시뮬레이션). 이 매핑은 A통신 양식 템플릿으로 저장된다")
-        final = {c: (m["field_code"], resolve(m["condition_phrase"]) if m["field_code"] in verify.PRICE_FIELDS
-                     else None, m["unit"]) for c, m in by_col.items()}
-        header_row = ai["header_row"]
+        final = {c.col: (c.field_code, c.plan_id, c.condition_key, c.unit) for c in colchk}
+        header_rows = hrows
     else:
         rep.say("사람", "검수자가 틀린 열을 고친 뒤 [승인] (시뮬레이션). 고친 내용은 다음 평가용 정답 데이터가 된다")
-        final = {c: (e["field_code"], e.get("condition_key"), "KRW") for c, e in key.items()}
-        header_row = key_row
+        final = {c: (e["field_code"], e.get("plan_id", ""), e.get("condition_key", "base"), e.get("unit", "none"))
+                 for c, e in key.items()}
+        header_rows = key_rows
 
     rep.say("코드", "승인된 매핑으로 '규칙 파서'가 전체 행을 읽는다 (여기부터는 AI가 아니다)")
     prod_col = next(c for c, v in final.items() if v[0] == "product_name")
     model_col = next((c for c, v in final.items() if v[0] == "model_code"), None)
     memo_col = next((c for c, v in final.items() if v[0] == "memo"), None)
     price_cols = [(c, v) for c, v in final.items() if v[0] in verify.PRICE_FIELDS]
-    headers = {L: ws[f"{L}{header_row}"].value for L in cols}
-    table_rows = []
+    heads = {L: verify.compose_header(grid, header_rows, L) for L in cols}
+    pivot, n_rec = [], 0
     with st.role("ingest_worker"):
-        for r in range(header_row + 1, ws.max_row + 1):
+        for r in range(1, min(header_rows)):          # 열 제목 위의 안내문(단위·조건)은 조건 메모로 보관
+            text = ws[f"A{r}"].value
+            if text and str(text).startswith("※"):
+                st.exec("insert into staging_note(raw_file_id, partner, mention_id, kind, text) values (?,?,?,?,?)",
+                        (rid, "A통신", None, "sheet_note", str(text)))
+        for r in range(max(header_rows) + 1, ws.max_row + 1):
             name = ws[f"{prod_col}{r}"].value
             if not name:
                 continue
             model = ws[f"{model_col}{r}"].value if model_col else None
             memo = ws[f"{memo_col}{r}"].value if memo_col else None
-            source_row = f"행 {r}: " + " | ".join(f"{headers[L]}={ws[f'{L}{r}'].value}" for L in cols
+            source_row = f"행 {r}: " + " | ".join(f"{heads[L]}={ws[f'{L}{r}'].value}" for L in cols
                                                     if ws[f"{L}{r}"].value is not None)
             mid = st.exec("insert into staging_mention(raw_file_id, partner, category, raw_name, model_code) "
                           "values (?,?,?,?,?)", (rid, "A통신", "telecom", str(name), model))
-            for c, (fcode, cond, unit) in price_cols:
+            prow = [name]
+            for c, (fcode, plan_id, cond, unit) in price_cols:
                 raw_v = ws[f"{c}{r}"].value
                 v = raw_v if isinstance(raw_v, int) else parse_krw(str(raw_v))
-                value = v * UNIT_MULT.get(unit, 1)
-                st.exec("insert into staging_record(raw_file_id, mention_id, partner, field_code, condition_key, "
+                value = None if v is None else v * verify.UNIT_MULT.get(unit, 1)
+                st.exec("insert into staging_record(raw_file_id, mention_id, partner, plan_id, field_code, condition_key, "
                         "value_int, unit, value_text, loc, evidence_text, extractor, grade, state, note) "
-                        "values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (rid, mid, "A통신", fcode, cond, value, "KRW", str(raw_v), f"{c}{r}", source_row,
+                        "values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (rid, mid, "A통신", plan_id, fcode, cond, value, "KRW", str(raw_v), f"{c}{r}", source_row,
                          "rule", "rule", "validated", memo))
-                table_rows.append([name, FIELD_KO[fcode], CONDITION_LABELS[cond], _won(value), f"{c}{r}", "규칙 파서"])
-    rep.table("staging에 저장된 값 (검수 전)", ["상품명(원문)", "항목", "조건", "값", "셀", "추출 주체"], table_rows)
-    rep.say("DB", f"staging에 {len(table_rows)}건 저장. canonical(확정)에는 아직 아무것도 들어가지 않았다")
+                prow.append(_won(value) if fcode == "device_price" else _man(value))
+                n_rec += 1
+            pivot.append(prow)
+    rep.table("staging에 저장된 값 (검수 전 · 출고가는 원, 나머지는 만원=개)",
+              ["상품명(원문)"] + [_short(f, p, c) for _, (f, p, c, _) in price_cols], pivot)
+    rep.say("DB", f"staging에 {n_rec}건 저장(단말 {len(pivot)}개 × 항목 {len(price_cols)}개). "
+                  "canonical(확정)에는 아직 아무것도 들어가지 않았다")
     ctx.metrics["① 자료 읽기(엑셀)"] = [ok_n, len(key)]
-    ctx.summary.append(["① 자료 읽기(엑셀)", f"열 제목 {len(key)}개의 의미를 제안",
-                        "매핑 제안(staging 템플릿 초안)", "헤더 글자·조건 사전·필수 열",
+    ctx.summary.append(["① 자료 읽기(엑셀)", f"열 {len(key)}개가 어떤 항목·요금제·가입유형·단위인지 제안",
+                        "매핑 제안(staging 템플릿 초안)", "열 제목 글자·요금제/조건 사전·단위 적용 범위",
                         _acc(ctx, ok_n, len(key)), "매핑 승인"])
     rep.pause()
 
 
 # ─────────────────────────────────────────────────────────────── 장면 2
+def scene2_kakao(ctx: Ctx):
+    rep, st, llm = ctx.rep, ctx.store, ctx.llm
+    rep.scene(2, "B통신 카톡 단가 공지 — 문장에서 리베이트 표 만들기 (AI 기능 ① 자료 읽기)",
+              "메신저로 온 공지에서 값마다 '상품·가입유형·요금제·값'을 원문 표기 그대로 옮긴다. "
+              "'55개'가 얼마인지(1개 = 1만원)는 AI가 아니라 코드 사전이 해석한다.")
+    path = ctx.root / "data/b_telecom_kakao_2610.txt"
+    text = path.read_text(encoding="utf-8")
+    with st.role("ingest_worker"):
+        rid = st.exec("insert into raw_file(partner, kind, filename, sha256) values (?,?,?,?)",
+                      ("B통신", "kakao", path.name, _sha(path)))
+    rep.say("코드", f"원본 보관: raw_file #{rid} {path.name} · 지시문 의심 문장: {len(verify.injection_scan(text))}건")
+    rep.text_block("원문 (B통신 총판 카톡 공지)", text)
+    rep.pause()
+    ai = kakao_parse.run(llm, text, path.name)
+    rep.json("🤖 AI 응답 — 값 목록", ai, max_lines=40)
+
+    rep.say("코드", "값마다 검증: ① 근거 줄이 원문에 한 번 있는가 ② 그 줄에 상품명과 '요금제 값' 짝이 있는가 "
+                   "③ 그 줄이 AI가 말한 가입유형 구역(▶ 제목) 아래에 있는가 ④ 요금제 표기가 사전에 있는가 ⑤ 금액을 코드가 해석할 수 있는가")
+    plans = ctx.plans
+    rows, staged = [], []
+    for rec in ai["records"]:
+        checks, got = verify.kakao_checks(text, rec, plans, "B통신")
+        g = _grade(checks)
+        staged.append((rec, checks, got, g))
+        rows.append([rec["product_ref_raw"], rec["join_phrase"], f"{rec['plan_phrase']} → {got['plan_id'] or '?'}",
+                     rec["value_text"], _won(got["value"]), *[MARK[c.ok] for c in checks], g])
+    rep.table("코드 검증 결과 (값별)", ["상품(원문)", "구역(AI)", "요금제(AI → 사전)", "값(원문)", "코드 해석(원)",
+                                   "줄", "짝", "구역", "요금제", "금액", "등급"], rows)
+    if ai.get("unit_note_text"):
+        rep.say("코드", f"AI가 옮긴 단위 안내: “{ai['unit_note_text']}” → 코드 사전의 '1개 = 1만원'으로 해석한다")
+
+    exp = {(compact(k["raw_name"]), k["plan_id"], k["condition_key"]): k["value"] for k in ctx.key["kakao_values"]}
+    got_set = {}
+    for rec, _, got, _ in staged:
+        got_set.setdefault((compact(rec["product_ref_raw"]), got["plan_id"], got["condition_key"]), set()).add(got["value"])
+    ok_n = sum(1 for k, v in exp.items() if got_set.get(k) == {v})   # 같은 칸에 다른 값도 적었으면 틀림
+    extra = sum(1 for k in got_set if k not in exp)
+    rep.say("정답", f"리베이트 값 {_acc(ctx, ok_n, len(exp))}" + (f" · 정답에 없는 값 {extra}건" if extra else ""))
+
+    with st.role("ingest_worker"):
+        mids = {}
+        for rec, checks, got, g in staged:
+            name = rec["product_ref_raw"]
+            if compact(name) not in mids:
+                mids[compact(name)] = st.exec("insert into staging_mention(raw_file_id, partner, category, raw_name, "
+                                              "model_code) values (?,?,?,?,?)", (rid, "B통신", "telecom", name, None))
+            st.exec("insert into staging_record(raw_file_id, mention_id, partner, plan_id, field_code, condition_key, "
+                    "value_int, unit, value_text, loc, evidence_text, extractor, grade, checks, state) "
+                    "values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (rid, mids[compact(name)], "B통신", got["plan_id"] or "", "rebate", got["condition_key"] or "base",
+                     got["value"], "KRW", rec["value_text"], rec["join_phrase"], rec["evidence_text"], "ai", g,
+                     json.dumps({c.name: c.ok for c in checks}, ensure_ascii=False), "validated"))
+        kept = 0
+        for c in ai["conditions"]:
+            if verify.evidence_in_text(text, c).ok:        # 원문에 있는 문장만 조건 메모로 보관
+                st.exec("insert into staging_note(raw_file_id, partner, mention_id, kind, text) values (?,?,?,?,?)",
+                        (rid, "B통신", None, "condition", c))
+                kept += 1
+    rep.say("DB", f"staging에 리베이트 {len(staged)}건, 조건 메모 {kept}건 저장 "
+                  "(저장되는 숫자는 AI가 아니라 코드가 '개' 표기를 해석한 값)")
+    ctx.metrics["① 자료 읽기(카톡)"] = [ok_n, len(exp)]
+    ctx.summary.append(["① 자료 읽기(카톡)", "공지 문장 → 상품·가입유형·요금제·값 목록(원문 표기)",
+                        "리베이트 값(staging, 등급 포함)", "근거 줄·짝·구역·요금제 사전·'개' 해석은 코드",
+                        _acc(ctx, ok_n, len(exp)), "값 승인(누락·오류는 수정)"])
+    rep.pause()
+
+
+# ─────────────────────────────────────────────────────────────── 장면 3
+def _insert_rule_record(st, rid, mid, partner, plan_id, fcode, cond, v, loc, extractor):
+    st.exec("insert into staging_record(raw_file_id, mention_id, partner, plan_id, field_code, condition_key, "
+            "value_int, unit, value_text, loc, extractor, grade, state) values (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (rid, mid, partner, plan_id, fcode, cond, v, "KRW", str(v), loc, extractor, "rule", "validated"))
+
+
+def scene3_fixed_feeds(ctx: Ctx):
+    rep, st = ctx.rep, ctx.store
+    rep.scene(3, "양식이 고정된 전산 — B통신 API, C통신 CSV (AI 없음)",
+              "이 장면에는 AI가 없다. 연동 규격이 정해진 API나 이미 승인된 양식의 파일은 코드가 규칙으로 읽는다. "
+              "AI는 양식이 제각각이거나 문장으로 된 자료에만 쓴다.")
+    plans = ctx.plans
+    summary = []
+    path = ctx.root / "data/b_telecom_api_2610.json"
+    body = json.loads(path.read_text(encoding="utf-8"))
+    n_b = 0
+    with st.role("ingest_worker"):
+        rid = st.exec("insert into raw_file(partner, kind, filename, sha256) values (?,?,?,?)",
+                      ("B통신", "api", path.name, _sha(path)))
+        for it in body["items"]:
+            mid = st.exec("insert into staging_mention(raw_file_id, partner, category, raw_name, model_code) "
+                          "values (?,?,?,?,?)", (rid, "B통신", "telecom", it["device_code"], None))
+            _insert_rule_record(st, rid, mid, "B통신", "", "device_price", "base", it["release_price"],
+                                it["device_code"], "api")
+            n_b += 1
+            for s in it["support"]:
+                _insert_rule_record(st, rid, mid, "B통신", plans.resolve("B통신", s["plan_code"]), "subsidy_amount",
+                                    "base", s["amount"], f"{it['device_code']}/{s['plan_code']}", "api")
+                n_b += 1
+    summary.append(["B통신", f"파트너 전산 API ({body['request']})", "연동 규격(고정 JSON) → 규칙",
+                    f"{len(body['items'])}개", f"{n_b}건", "출고가·공시지원금", "0회"])
+
+    path = ctx.root / "data/c_telecom_2610.csv"
+    rows = list(csv.reader(open(path, encoding="utf-8")))
+    same = rows[0] == C_TEMPLATE
+    rep.say("코드", f"C통신 CSV 열 제목이 승인된 양식(C통신-CSV-v1)과 {'같음 → AI 없이 규칙으로 읽음' if same else '다름 → AI 매핑 필요'}")
+    n_c, mids = 0, {}
+    with st.role("ingest_worker"):
+        rid = st.exec("insert into raw_file(partner, kind, filename, sha256) values (?,?,?,?)",
+                      ("C통신", "csv", path.name, _sha(path)))
+        for code, _, price, plan_code, sub, mnp, chg in rows[1:]:
+            if code not in mids:
+                mids[code] = st.exec("insert into staging_mention(raw_file_id, partner, category, raw_name, model_code) "
+                                     "values (?,?,?,?,?)", (rid, "C통신", "telecom", code, None))
+                _insert_rule_record(st, rid, mids[code], "C통신", "", "device_price", "base", int(price), code, "template")
+                n_c += 1
+            pid = plans.resolve("C통신", plan_code)
+            for fcode, cond, v in [("subsidy_amount", "base", sub), ("rebate", "join=mnp", mnp), ("rebate", "join=chg", chg)]:
+                _insert_rule_record(st, rid, mids[code], "C통신", pid, fcode, cond, int(v), f"{code}/{plan_code}", "template")
+                n_c += 1
+    summary.append(["C통신", "전산 CSV 다운로드", "승인된 양식 → 규칙", f"{len(mids)}개", f"{n_c}건",
+                    "출고가·공시지원금·리베이트", "0회"])
+    rep.table("⚙️ 규칙으로 읽은 전산", ["파트너", "받는 방식", "읽는 방법", "단말", "값", "항목", "AI 호출"], summary)
+    rep.note("B통신은 출고가·공시지원금은 API로, 리베이트는 카톡으로 온다 — 같은 파트너의 값도 여러 곳에 흩어져 있다. "
+             "이 값들이 장면 9의 요금 설계 화면에서 한곳에 모인다")
+    rep.pause()
+
+
+# ─────────────────────────────────────────────────────────────── 장면 4
 _PII = re.compile(r"(\d{6}-?[1-4]\d{6})|(01[016789]-?\d{3,4}-?\d{4})")
 
 
-def _grade(checks) -> str:
-    if any(c.ok is False for c in checks):
-        return "low"
-    return "high" if all(c.ok for c in checks) else "medium"
-
-
-def scene2_pdf(ctx: Ctx):
+def scene4_pdf(ctx: Ctx):
     rep, st, llm = ctx.rep, ctx.store, ctx.llm
-    rep.scene(2, "가전 렌탈 PDF 안내문 — 표 값 옮겨 적기 (AI 기능 ① 자료 읽기)",
+    rep.scene(4, "가전 렌탈 PDF 안내문 — 표 값 옮겨 적기 (AI 기능 ① 자료 읽기)",
               "PDF를 읽고 표의 값을 '원문 표기 그대로' 옮겨 적는다. 값마다 그 값이 적힌 원문 한 줄(근거)을 붙인다. "
               "할인가·합계 계산이나 원문에 없는 값은 만들지 않는다.")
     path = ctx.root / "data/c_rental_price_2610.pdf"
@@ -315,17 +542,17 @@ def scene2_pdf(ctx: Ctx):
         for row, f, checks, g in staged:
             if f["field"] == "other":
                 continue
-            label = row["row_label"]
-            if label not in mids:
-                mids[label] = st.exec("insert into staging_mention(raw_file_id, partner, category, raw_name, model_code)"
-                                      " values (?,?,?,?,?)", (rid, "C렌탈", "appliance", label, None))
+            lbl = row["row_label"]
+            if lbl not in mids:
+                mids[lbl] = st.exec("insert into staging_mention(raw_file_id, partner, category, raw_name, model_code)"
+                                    " values (?,?,?,?,?)", (rid, "C렌탈", "appliance", lbl, None))
             unit = FIELD_UNIT[f["field"]]
             value = parse_krw(f["value_text"]) if unit == "KRW" else parse_count(f["value_text"])
             st.exec("insert into staging_record(raw_file_id, mention_id, partner, field_code, condition_key, value_int,"
                     " unit, value_text, loc, evidence_text, extractor, grade, checks, state) "
                     "values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (rid, mids[label], "C렌탈", f["field"], "base", value, unit, f["value_text"],
-                     json.dumps({"page": row["page"], "row": label, "col": f["col_header"]}, ensure_ascii=False),
+                    (rid, mids[lbl], "C렌탈", f["field"], "base", value, unit, f["value_text"],
+                     json.dumps({"page": row["page"], "row": lbl, "col": f["col_header"]}, ensure_ascii=False),
                      f["evidence_text"], "ai", g, json.dumps({c.name: c.ok for c in checks}, ensure_ascii=False),
                      "validated"))
     rep.say("DB", f"staging에 {len(staged)}건 저장 (추출 주체: AI, 저장되는 숫자는 AI 숫자가 아니라 코드가 원문 표기를 파싱한 값)")
@@ -336,10 +563,10 @@ def scene2_pdf(ctx: Ctx):
     rep.pause()
 
 
-# ─────────────────────────────────────────────────────────────── 장면 3
-def scene3_matching(ctx: Ctx):
+# ─────────────────────────────────────────────────────────────── 장면 5
+def scene5_matching(ctx: Ctx):
     rep, st, llm = ctx.rep, ctx.store, ctx.llm
-    rep.scene(3, "상품명 매칭 — 파트너마다 다른 이름을 표준 상품에 연결 (AI 기능 ② 상품명 매칭)",
+    rep.scene(5, "상품명 매칭 — 파트너마다 다른 이름을 표준 상품에 연결 (AI 기능 ② 상품명 매칭)",
               "규칙(alias·모델코드·정규화)으로 못 푼 이름에 대해서만, 코드가 뽑은 후보 중 같은 상품을 '고른다'. "
               "후보에 없는 상품은 만들 수 없고, 확정은 사람이 한다.")
     cat = Catalog.from_db(st)
@@ -348,24 +575,24 @@ def scene3_matching(ctx: Ctx):
     with st.role("ingest_worker"):
         for m in mentions:
             raw, partner, category = m["raw_name"], m["partner"], m["category"]
-            pid, path = cat.m0_alias(partner, raw), "M0 alias(전에 사람이 승인한 이름)"
+            pid, path = cat.m0_alias(partner, raw), "M0 alias(전에 승인한 이름·연동 코드)"
             if not pid:
                 ids = cat.m0_model_code(m["model_code"])
                 pid, path = (ids[0], f"M0 모델코드 {m['model_code']} 유일 일치") if len(ids) == 1 else (None, None)
                 if len(ids) > 1:
-                    rule_rows.append([raw, "M0 모델코드", f"{m['model_code']} → 후보 {len(ids)}개(유일하지 않음)"])
+                    rule_rows.append([partner, raw, "M0 모델코드", f"{m['model_code']} → 후보 {len(ids)}개(유일하지 않음)"])
             if not pid:
                 ids = cat.m1_norm(raw, category)
                 pid, path = (ids[0], "M1 정규화 규칙 일치") if len(ids) == 1 else (None, None)
             if pid:
                 st.exec("update staging_mention set product_id=?, match_state='matched_rule', match_path=? where id=?",
                         (pid, path, m["id"]))
-                rule_rows.append([raw, path, f"→ {cat.products[pid].name} (AI 호출 안 함)"])
+                rule_rows.append([partner, raw, path, f"→ {cat.products[pid].name} (AI 호출 안 함)"])
             else:
                 cands = cat.m2_candidates(raw, category, 5)
                 need_ai.append((m, cands))
-                rule_rows.append([raw, "M2 유사도 후보", f"후보 {len(cands)}개 → AI 판정 필요"])
-    rep.table("⚙️ 규칙 단계 결과 (AI 없음)", ["상품명(원문)", "단계", "결과"], rule_rows)
+                rule_rows.append([partner, raw, "M2 유사도 후보", f"후보 {len(cands)}개 → AI 판정 필요"])
+    rep.table("⚙️ 규칙 단계 결과 (AI 없음)", ["파트너", "상품명(원문)", "단계", "결과"], rule_rows)
 
     key = ctx.key["matching"]
     blocks, mkeys = [], []
@@ -465,7 +692,7 @@ def scene3_matching(ctx: Ctx):
     rep.pause()
 
 
-# ─────────────────────────────────────────────────────────────── 장면 4
+# ─────────────────────────────────────────────────────────────── 장면 6
 _PLACEHOLDER = re.compile(r"\{(prev_value|new_value|change_pct)\}")
 DEFAULT_TEMPLATE = "이전 값 {prev_value}에서 {new_value}로 바뀌었습니다({change_pct})."
 
@@ -490,9 +717,9 @@ def fill_template(tmpl: str, prev_v, new_v) -> tuple[str, str | None]:
     return _fix_particles(_PLACEHOLDER.sub(lambda x: vals[x[1]], DEFAULT_TEMPLATE if why else tmpl)), why
 
 
-def scene4_anomaly(ctx: Ctx):
+def scene6_anomaly(ctx: Ctx):
     rep, st, llm = ctx.rep, ctx.store, ctx.llm
-    rep.scene(4, "이상 데이터 감지 (AI 기능 ③ 이상 감지)",
+    rep.scene(6, "이상 데이터 감지 (AI 기능 ③ 이상 감지)",
               "규칙 코드가 이미 '이상'으로 잡은 건에 대해 원인을 분류하고 설명 문장의 틀을 쓴다. "
               "이상 여부·심각도·승인은 AI가 정하지 않는다. 설명 속 숫자도 코드가 채운다.")
     recs = st.query("""select r.*, m.product_id, m.raw_name, p.name as product_name from staging_record r
@@ -501,43 +728,46 @@ def scene4_anomaly(ctx: Ctx):
     flagged, table_rows, unchanged, settle = [], [], 0, 0
     with st.role("ingest_worker"):
         for r in recs:
-            prev = st.one("select value_int from canonical_price where partner=? and product_id=? and field_code=? "
-                          "and condition_key=? and month=?",
-                          (r["partner"], r["product_id"], r["field_code"], r["condition_key"], PREV_MONTH))
+            prev = st.one("select value_int from canonical_price where partner=? and product_id=? and plan_id=? "
+                          "and field_code=? and condition_key=? and month=?",
+                          (r["partner"], r["product_id"], r["plan_id"], r["field_code"], r["condition_key"], PREV_MONTH))
             prev_v = prev["value_int"] if prev else None
             if prev_v == r["value_int"]:
                 st.exec("update staging_record set state='unchanged' where id=?", (r["id"],))
                 unchanged += 1
                 continue
-            events = anomaly_rules.check(r["field_code"], prev_v, r["value_int"])
+            events = anomaly_rules.check(r["field_code"], prev_v, r["value_int"]) if r["value_int"] is not None else \
+                [{"rule_code": "UNPARSEABLE", "severity": "block", "reason": "값을 숫자로 읽을 수 없음"}]
             for e in events:
                 st.exec("insert into staging_anomaly(record_id, rule_code, severity, reason, prev_value, new_value) "
                         "values (?,?,?,?,?,?)", (r["id"], e["rule_code"], e["severity"], e["reason"], prev_v, r["value_int"]))
             state = "blocked" if any(e["severity"] == "block" for e in events) else "pending_review"
             st.exec("update staging_record set state=? where id=?", (state, r["id"]))
-            pct = anomaly_rules.change_pct(prev_v, r["value_int"])
+            pct = anomaly_rules.change_pct(prev_v, r["value_int"]) if r["value_int"] is not None else None
             verdict = ", ".join(f"{e['rule_code']}({e['severity']})" for e in events) or "변경(규칙 위반 없음)"
-            if r["field_code"] in anomaly_rules.SETTLEMENT_FIELDS:
+            if r["field_code"] in anomaly_rules.SETTLEMENT_FIELDS and state != "blocked":
                 verdict += " · 정산 금액 → 사람 승인 필수"
                 settle += 1
-            table_rows.append([r["product_name"], f"{FIELD_KO[r['field_code']]}({CONDITION_LABELS[r['condition_key']]})",
+            table_rows.append([r["partner"], r["product_name"],
+                               _item_label(ctx, r["partner"], r["field_code"], r["plan_id"], r["condition_key"]),
                                _won(prev_v), _won(r["value_int"]), "-" if pct is None else f"{pct:+.1f}%", verdict])
             if events:
                 flagged.append((r, prev_v, events))
     rep.say("코드", f"새 값과 {PREV_MONTH} 확정값 비교: 같음 {unchanged}건(반영 불필요), 바뀜 {len(table_rows)}건")
-    rep.table("⚙️ 규칙 판정 (AI 없음)", ["상품", "항목", "이전", "새 값", "변동", "규칙(심각도)"], table_rows)
+    rep.table("⚙️ 규칙 판정 (AI 없음)", ["파트너", "상품", "항목", "이전", "새 값", "변동", "규칙(심각도)"], table_rows)
     rep.note("block = 반영 차단(사람이 해소해야 함) / warn = 검수 필요. 심각도는 규칙이 정하고 AI가 바꿀 수 없다")
     if settle:
-        rep.note(f"리베이트는 정산 금액이라, 바뀐 {settle}건은 이상이 아니어도 자동 반영하지 않고 장면 6에서 담당자가 승인한다")
+        rep.note(f"리베이트는 정산 금액이라, 바뀐 {settle}건은 이상이 아니어도 자동 반영하지 않고 장면 8에서 담당자가 승인한다")
     if not flagged:
+        rep.pause()
         return
 
     ids, lines = [], []
     for i, (r, prev_v, events) in enumerate(flagged, 1):
         iid = f"a{i}"
         ids.append(iid)
-        lines.append(f"{iid} | 파트너: {r['partner']} | 상품: {r['product_name']} | 항목: {FIELD_KO[r['field_code']]}"
-                     f"({CONDITION_LABELS[r['condition_key']]}) | 규칙: "
+        lines.append(f"{iid} | 파트너: {r['partner']} | 상품: {r['product_name']} | 항목: "
+                     f"{_item_label(ctx, r['partner'], r['field_code'], r['plan_id'], r['condition_key'])} | 규칙: "
                      + ", ".join(f"{e['rule_code']}({e['reason']})" for e in events)
                      + f" | 이전 값: {prev_v} | 새 값: {r['value_int']} | 원문 행: {r['evidence_text']} | 비고: {r['note'] or '없음'}")
     block = "\n".join(lines)
@@ -559,9 +789,11 @@ def scene4_anomaly(ctx: Ctx):
                          + " → 기본 문구 사용")
             cause = x["likely_cause"] if x else "unknown"
             st.exec("update staging_anomaly set ai_cause=?, ai_explanation=? where record_id=?", (cause, text[:200], r["id"]))
-            out_rows.append([r["product_name"], ", ".join(f"{e['rule_code']}({e['severity']})" for e in events),
+            out_rows.append([r["product_name"], _item_label(ctx, r["partner"], r["field_code"], r["plan_id"], r["condition_key"]),
+                             ", ".join(f"{e['rule_code']}({e['severity']})" for e in events),
                              cause, text, " / ".join(x["check_points_ko"]) if x else ""])
-    rep.table("최종 이상 알림 (심각도=규칙, 원인·설명=AI 참고용)", ["상품", "규칙(심각도)", "AI 원인 분류", "설명(숫자는 코드가 채움)", "확인할 일(AI)"], out_rows)
+    rep.table("최종 이상 알림 (심각도=규칙, 원인·설명=AI 참고용)",
+              ["상품", "항목", "규칙(심각도)", "AI 원인 분류", "설명(숫자는 코드가 채움)", "확인할 일(AI)"], out_rows)
     rep.say("코드", "AI가 '정상적인 정책 변경'이라고 분류해도 block은 풀리지 않고, 승인 버튼 기본값도 바뀌지 않는다")
     ctx.summary.append(["③ 이상 감지", "규칙이 잡은 건의 원인 분류·설명 틀",
                         "설명(staging_anomaly, 참고용)", "항목 ID·자리표시자 외 숫자 금지",
@@ -569,10 +801,10 @@ def scene4_anomaly(ctx: Ctx):
     rep.pause()
 
 
-# ─────────────────────────────────────────────────────────────── 장면 5
-def scene5_notice(ctx: Ctx):
+# ─────────────────────────────────────────────────────────────── 장면 7
+def scene7_notice(ctx: Ctx):
     rep, st, llm = ctx.rep, ctx.store, ctx.llm
-    rep.scene(5, "상조 공지 메일 — 문장을 변경 사항 목록으로 (AI 기능 ④ 자연어처리)",
+    rep.scene(7, "상조 공지 메일 — 문장을 변경 사항 목록으로 (AI 기능 ④ 자연어처리)",
               "자유 문장으로 된 공지 메일에서 '어떤 상품의 무엇이 언제부터 바뀌는지'를 원문 그대로 뽑아 목록으로 만든다. "
               "이 결과로 DB 가격을 바꾸지 않는다.")
     path = ctx.root / "data/b_funeral_notice_2610.txt"
@@ -629,16 +861,64 @@ def scene5_notice(ctx: Ctx):
     rep.pause()
 
 
-# ─────────────────────────────────────────────────────────────── 장면 6
-def scene6_confirm_and_calc(ctx: Ctx):
+# ─────────────────────────────────────────────────────────────── 장면 8
+def _review(ctx, st, recs):
+    """검수자(시뮬레이션)의 판단. (결정 목록, 특이 건 표)"""
+    key_pdf = ctx.key["pdf_values"]
+    key_kakao = {(compact(k["raw_name"]), k["plan_id"], k["condition_key"]): k["value"] for k in ctx.key["kakao_values"]}
+    decided, special, seen = [], {}, set()
+    for r in recs:
+        state, value, edited, reason = "approved", r["value_int"], 0, "승인"
+        exp = None
+        if r["extractor"] == "ai" and r["kind"] == "pdf":
+            exp = key_pdf.get(r["raw_name"], {}).get(r["field_code"])
+        elif r["extractor"] == "ai" and r["kind"] == "kakao":
+            exp = key_kakao.get((compact(r["raw_name"]), r["plan_id"], r["condition_key"]), "reject")
+        prev = st.one("select value_int from canonical_price where partner=? and product_id=? and plan_id=? "
+                      "and field_code=? and condition_key=? and month=?",
+                      (r["partner"], r["product_id"], r["plan_id"], r["field_code"], r["condition_key"], PREV_MONTH))
+        if r["product_id"] is None:
+            state, reason = "excluded", "신규 상품 등록 대기"
+        elif r["state"] == "blocked":
+            state, reason = "excluded", "단위 오류 의심 → 파트너 재확인 요청(사유 기록)"
+        elif r["kind"] == "kakao" and r["grade"] == "low":
+            state, reason = "excluded", "검증 실패(원문의 구역·짝과 다름) → 반려, 원문을 보고 다시 입력"
+        elif exp == "reject":
+            state, reason = "excluded", "원문과 요금제·가입유형이 맞지 않음 → 반려"
+        elif exp is not None and exp != r["value_int"]:
+            value, edited = exp, 1
+            reason = f"원문 확인 후 {_won(r['value_int'])} → {_won(exp)} 수정"
+        elif r["state"] == "unchanged":
+            reason = "전월과 같음"
+        elif r["field_code"] in anomaly_rules.SETTLEMENT_FIELDS:
+            reason = (f"정산 금액 변경({_man(prev['value_int'] if prev else None)}개 → {_man(value)}개) "
+                      "→ 담당자가 파트너 정책 원문과 대조 후 승인")
+        elif r["grade"] == "low":
+            reason = "원문 확인 후 승인(검증 실패 항목 직접 확인)"
+        elif st.one("select 1 from staging_anomaly where record_id=? and severity='warn'", (r["id"],)):
+            reason = "비고 확인 후 승인"
+        k = (r["partner"], r["product_id"], r["plan_id"], r["field_code"], r["condition_key"])
+        if state == "approved" and k in seen:
+            state, reason = "excluded", "같은 항목이 이미 승인됨(중복) → 반려"
+        if state == "approved":
+            seen.add(k)
+        decided.append((r, state, value, edited))
+        if reason not in ("승인", "전월과 같음"):
+            k = (r["partner"], r["raw_name"], reason)
+            special.setdefault(k, []).append(_item_label(ctx, r["partner"], r["field_code"], r["plan_id"], r["condition_key"]))
+    rows = [[p, n, items[0] if len(items) == 1 else f"{len(items)}건", why] for (p, n, why), items in special.items()]
+    return decided, rows
+
+
+def scene8_confirm_and_calc(ctx: Ctx):
     rep, st = ctx.rep, ctx.store
-    rep.scene(6, "사람 확인 → 확정 DB 반영 → 계산 (AI 없음)",
+    rep.scene(8, "사람 확인 → 확정 DB 반영 → 계산 (AI 없음)",
               "이 장면에는 AI가 없다. 사람이 확인한 값만 canonical(확정)에 들어가고, "
               "계산 엔진은 canonical만 읽어 고정 공식으로 계산한다.")
     with st.role("ingest_worker"):
         try:
             st.exec("insert into canonical_price(partner, product_id, field_code, condition_key, value_int, unit, month) "
-                    "values ('A통신','P001','monthly_fee','contract=24',1,'KRW','2026-10')")
+                    "values ('A통신','P001','rebate','join=mnp',1,'KRW','2026-10')")
             rep.say("보안", "⚠️ AI 워커 역할이 확정 테이블에 썼습니다 (권한 설정 오류)")
         except sqlite3.DatabaseError as e:
             rep.say("보안", f"AI 워커 역할로 확정(canonical) 테이블에 쓰기 시도 → DB가 거부 ({e})")
@@ -649,113 +929,175 @@ def scene6_confirm_and_calc(ctx: Ctx):
         except sqlite3.DatabaseError as e:
             rep.say("보안", f"계산 엔진 역할로 검수 전(staging) 데이터 읽기 시도 → DB가 거부 ({e})")
 
-    recs = st.query("""select r.*, m.product_id, m.raw_name, m.match_state from staging_record r
-                       join staging_mention m on m.id = r.mention_id order by r.id""")
+    recs = st.query("""select r.*, m.product_id, m.raw_name, m.match_state, f.kind from staging_record r
+                       join staging_mention m on m.id = r.mention_id join raw_file f on f.id = r.raw_file_id
+                       order by r.id""")
     rep.say("코드", "승인 정책(규칙): 리베이트 같은 정산 금액이 바뀐 건은 규칙 위반이 없어도 자동 반영 대상에서 빼고 "
                    "담당자 승인 목록에 올린다")
-    key_pdf = ctx.key["pdf_values"]
-    decided, rows = [], []
     with st.role("reviewer"):
-        for r in recs:
-            reason, state, value, edited = "", None, r["value_int"], 0
-            if r["product_id"] is None:
-                state, reason = "excluded", "신규 상품 등록 대기"
-            elif r["state"] == "blocked":
-                state, reason = "excluded", "단위 오류 의심 → 파트너 재확인 요청(사유 기록)"
-            elif r["state"] == "unchanged":
-                state, reason = "approved", "전월과 같음"
-            else:
-                exp = key_pdf.get(r["raw_name"], {}).get(r["field_code"]) if r["extractor"] == "ai" else None
-                if exp is not None and exp != r["value_int"]:
-                    value, edited, state = exp, 1, "approved"
-                    reason = f"원문 확인 후 {_won(r['value_int'])} → {_won(exp)} 수정"
-                elif r["grade"] == "low":
-                    state, reason = "approved", "원문 확인 후 승인(검증 실패 항목 직접 확인)"
-                elif r["field_code"] in anomaly_rules.SETTLEMENT_FIELDS:
-                    prev = st.one("select value_int from canonical_price where partner=? and product_id=? and field_code=?"
-                                  " and condition_key=? and month=?",
-                                  (r["partner"], r["product_id"], r["field_code"], r["condition_key"], PREV_MONTH))
-                    state = "approved"
-                    reason = (f"정산 금액 변경({_won(prev['value_int'] if prev else None)} → {_won(value)}) "
-                              "→ 담당자가 파트너 정책 공문과 대조 후 승인")
-                else:
-                    has_warn = st.one("select 1 from staging_anomaly where record_id=? and severity='warn'", (r["id"],))
-                    state, reason = "approved", ("비고 확인 후 승인" if has_warn else "승인")
+        decided, rows = _review(ctx, st, recs)
+        for r, state, value, edited in decided:
             st.exec("update staging_record set state=?, value_int=?, human_edited=? where id=?", (state, value, edited, r["id"]))
-            decided.append((r, state, value))
-            if reason not in ("승인", "전월과 같음"):
-                rows.append([r["raw_name"], FIELD_KO[r["field_code"]], _won(r["value_int"]), reason])
-        counts = {s: sum(1 for _, x, _ in decided if x == s) for s in ("approved", "excluded")}
+        # AI가 카톡 공지에서 빠뜨린 값은 사람이 원문을 보고 직접 입력한다
+        done = {(r["product_id"], r["plan_id"], r["condition_key"]) for r, s, _, _ in decided
+                if s == "approved" and r["kind"] == "kakao"}
+        alias = {compact(a["alias"]): a["product_id"] for a in st.query("select * from canonical_alias where partner='B통신'")}
+        manual = [k for k in ctx.key["kakao_values"]
+                  if alias.get(compact(k["raw_name"])) and
+                  (alias[compact(k["raw_name"])], k["plan_id"], k["condition_key"]) not in done]
+        for k in manual:
+            st.exec("insert into canonical_price(partner, product_id, plan_id, field_code, condition_key, value_int, unit, "
+                    "month, source, approved_by) values (?,?,?,?,?,?,?,?,?,?)",
+                    ("B통신", alias[compact(k["raw_name"])], k["plan_id"], "rebate", k["condition_key"], k["value"], "KRW",
+                     MONTH, "카톡 공지(사람 직접 입력 — AI 누락)", "검수자(시뮬레이션)"))
+        if manual:
+            rows.append(["B통신", "(카톡 공지)", f"{len(manual)}건", "AI가 빠뜨린 값 → 사람이 원문을 보고 직접 입력"])
+        counts = {s: sum(1 for _, x, _, _ in decided if x == s) for s in ("approved", "excluded")}
         rep.say("사람", f"검수 (시뮬레이션): 승인 {counts['approved']}건, 제외 {counts['excluded']}건. 특이 건:")
-        rep.table("🙋 검수 특이 건", ["상품명(원문)", "항목", "값", "처리"], rows)
+        rep.table("🙋 검수 특이 건", ["파트너", "상품명(원문)", "항목", "처리"], rows)
 
-        n = 0
-        for r, state, value in decided:
+        n = len(manual)
+        for r, state, value, _ in decided:
             if state != "approved":
                 continue
-            st.exec("insert into canonical_price(partner, product_id, field_code, condition_key, value_int, unit, month, "
-                    "source, approved_by) values (?,?,?,?,?,?,?,?,?)",
-                    (r["partner"], r["product_id"], r["field_code"], r["condition_key"], value, r["unit"], MONTH,
-                     f"staging_record#{r['id']}({'AI 추출' if r['extractor'] == 'ai' else '규칙 파서'})", "검수자(시뮬레이션)"))
+            st.exec("insert into canonical_price(partner, product_id, plan_id, field_code, condition_key, value_int, unit, "
+                    "month, source, approved_by) values (?,?,?,?,?,?,?,?,?,?)",
+                    (r["partner"], r["product_id"], r["plan_id"], r["field_code"], r["condition_key"], value, r["unit"],
+                     MONTH, f"{SOURCE_LABEL.get(r['kind'], r['kind'])} · staging#{r['id']}", "검수자(시뮬레이션)"))
             st.exec("update staging_record set state='promoted' where id=?", (r["id"],))
             n += 1
-        st.audit("검수자(시뮬레이션)", "promote", f"{MONTH} 확정 {n}건")
-    rep.say("DB", f"canonical에 {MONTH} 확정 단가 {n}건 반영 (승인 함수만 쓸 수 있음, 감사 로그 기록)")
+        # 조건·비고 메모: 원문 안내문·조건 문장과 상품별 비고를 확인 후 화면용으로 확정
+        notes = [(x["partner"], None, x["text"]) for x in st.query("select * from staging_note order by id")]
+        notes += [(x["partner"], x["product_id"], x["note"]) for x in st.query(
+            "select distinct r.partner, m.product_id, r.note from staging_record r join staging_mention m "
+            "on m.id = r.mention_id where r.note is not null and m.product_id is not null")]
+        for partner, pid, text in notes:
+            st.exec("insert into canonical_note(partner, product_id, text, month, source, approved_by) values (?,?,?,?,?,?)",
+                    (partner, pid, text, MONTH, "원문 조건·비고", "검수자(시뮬레이션)"))
+        new_products = st.query("select partner, raw_name from staging_mention where match_state='new_product_requested' "
+                                "and category='telecom'")
+        st.audit("검수자(시뮬레이션)", "promote", f"{MONTH} 확정 {n}건, 조건 메모 {len(notes)}건")
+    ctx.notices = [f"신규 상품 등록 대기: {x['raw_name']}({x['partner']}) — 관리자 승인 후 이 화면에 표시" for x in new_products]
+    rep.say("DB", f"canonical에 {MONTH} 확정 단가 {n}건, 조건·비고 메모 {len(notes)}건 반영 (승인 함수만 쓸 수 있음, 감사 로그 기록)")
     rep.pause()
 
     rep.say("계산", "계산 엔진 실행: canonical만 읽고, 기준 월 이전의 가장 최근 확정값을 쓴다")
     with st.role("calc_engine"):
         results = calc_engine.run(st, MONTH)
+    ctx.calc = results
     crow = []
     for x in results:
+        if x["category"] == "telecom":
+            continue
         ins = ", ".join(f"{ARG_KO.get(k, k)} {_won(v)}({x['sources'][k]})" for k, v in x["inputs"].items())
         res = x["skipped"] or " / ".join(f"{k} {_won(v)}원" for k, v in x["result"].items())
         crow.append([x["name"], x["formula"], ins, res])
-    rep.table(f"🧮 계산 결과 (공식 버전 {formulas.FORMULA_VERSION}, 예시 공식)", ["상품", "공식", "입력(확정 월)", "결과"], crow)
-    stale = [x for x in results if any(m == PREV_MONTH for m in x["sources"].values()) and x["category"] == "telecom"]
-    if stale:
-        rep.note("※ 10월 값이 확정되지 않은 항목(예: 단위 오류로 제외된 월정액)은 9월 확정값이 계속 쓰인다 — AI가 추정한 값이 아니다")
-    again = [formulas.telecom_monthly_payment(**x["inputs"]) if x["category"] == "telecom" else
-             formulas.rental_total_cost(**x["inputs"]) if x["category"] == "appliance" else
-             formulas.funeral_total_payment(**x["inputs"]) for x in results if not x["skipped"]]
+    rep.table(f"🧮 계산 결과 — 가전·상조 (공식 버전 {formulas.FORMULA_VERSION}, 예시 공식)", ["상품", "공식", "입력(확정 월)", "결과"], crow)
+    tel = [x for x in results if x["category"] == "telecom"]
+    focus = [x for x in tel if x["product_id"] == "P001"]
+    rep.table(f"🧮 계산 결과 — 통신 월 납부액 (전체 {len(tel)}건 중 갤럭시 S24 256GB 블랙)",
+              ["통신사", "요금제(월정액)", "출고가", "공시지원금(확정 월)", "공시지원금 방식", "선택약정 25% 방식"],
+              [[x["partner"], f"{x['plan_name']} {_won(x['inputs'].get('monthly_fee'))}",
+                _won(x["inputs"].get("device_price")),
+                f"{_won(x['inputs'].get('subsidy'))}({x['sources'].get('subsidy', '-')})",
+                *(["확정값 없음", ""] if x["skipped"] else
+                  [f"{_won(x['result']['공시 월 납부액'])}원", f"{_won(x['result']['선약 월 납부액'])}원"])] for x in focus])
+    rep.note("리베이트는 판매점 쪽 정산 금액이라 고객 월 납부액 공식에 들어가지 않는다. 대신 요금 설계 화면(셀러용)에 따로 보인다")
+    again = [calc_engine.compute(x["category"], x["inputs"]) for x in results if not x["skipped"]]
     same = again == [x["result"] for x in results if not x["skipped"]]
     rep.say("계산", f"같은 입력으로 다시 계산 → 결과 {'동일 ✅ (결정론)' if same else '다름 ❌'}")
-    src = inspect.getsource(formulas) + inspect.getsource(calc_engine)
+    src = inspect.getsource(formulas) + inspect.getsource(calc_engine) + inspect.getsource(rate_design)
     no_ai = not re.search(r"^\s*(import|from)\s+(anthropic|\.\.ai|\.\.llm|moduon_demo\.(ai|llm))", src, re.M)
-    rep.say("계산", f"계산 모듈이 AI 코드를 import하는가? → {'아니오 ✅' if no_ai else '예 ❌'}")
+    rep.say("계산", f"계산 모듈·화면 모듈이 AI 코드를 import하는가? → {'아니오 ✅' if no_ai else '예 ❌'}")
     ai_rows = st.one("select count(*) n from canonical_price where month=? and source like '%AI 추출%'", (MONTH,))["n"]
-    rep.note(f"확정값 중 AI가 추출한 값 {ai_rows}건은 모두 코드 검증 + 사람 승인을 거쳐 들어왔다")
+    rep.note(f"확정값 중 AI가 추출한 값 {ai_rows}건(카톡·PDF)은 모두 코드 검증 + 사람 승인을 거쳐 들어왔다. "
+             "엑셀 값은 AI가 제안한 열 매핑을 사람이 승인한 뒤 규칙 파서가 읽었다")
     rep.pause()
 
 
-# ─────────────────────────────────────────────────────────────── 장면 7
-def scene7_nlq(ctx: Ctx):
+# ─────────────────────────────────────────────────────────────── 장면 9
+def scene9_rate_screen(ctx: Ctx):
+    rep, st = ctx.rep, ctx.store
+    rep.scene(9, "휴대폰 요금 설계 화면 — 흩어진 전산을 한 화면으로 (AI 없음)",
+              "이 장면에는 AI가 없다. 엑셀·카톡·API·CSV로 따로 들어와 사람이 확정한 값과 계산 결과를 "
+              "단말별·통신사별·요금제별로 한 화면에 모은다. 셀러 화면에는 요금제×가입유형별 리베이트(개)가 보인다.")
+    with st.role("screen_reader"):
+        try:
+            st.query("select * from staging_record limit 1")
+            rep.say("보안", "⚠️ 화면이 staging을 읽었습니다 (권한 설정 오류)")
+        except sqlite3.DatabaseError as e:
+            rep.say("보안", f"화면 역할로 검수 전(staging) 데이터 읽기 시도 → DB가 거부 ({e}). 화면에는 확정값만 나간다")
+        d = rate_design.collect(st, MONTH, PREV_MONTH, ctx.calc, ctx.notices, ctx.llm.mode_label)
+    rep.table("📱 요금 설계 미리보기 — 갤럭시 S24 256GB 블랙 (셀러 화면)",
+              ["통신사", "요금제(월정액)", "공시지원금", "월 납부액(공시)", "월 납부액(선약)", "리베이트 번이", "리베이트 기변"],
+              rate_design.summary_rows(d, "P001"))
+    rep.note("리베이트 1개 = 1만원. 고객 안내 화면으로 바꾸면 리베이트 두 열과 내부 조건이 숨겨진다")
+    stale = [(k, v) for k, v in d["values"].items() if k[3] == "rebate" and v[1] != MONTH]
+    for (partner, pid, plan_id, _, cond), (v, m) in stale:
+        rep.note(f"※ {partner} {_product_name(st, pid)} 리베이트({label(ctx.plans, partner, plan_id, cond)})는 10월 값이 "
+                 f"제외돼 {m} 확정값({_man(v)}개)을 '9월 값' 표시와 함께 보여 준다 — AI가 추정한 값이 아니다")
+    path = ctx.root / "output" / f"rate_design_{ctx.tag}.html"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(rate_design.render(d), encoding="utf-8")
+    ctx.screen_path = path
+    rep.say("코드", f"요금 설계 화면 파일: {path.relative_to(ctx.root)} (단말 {len(d['products'])}개 · 통신사 {len(d['partners'])}곳)")
+    if ctx.open_screen:
+        webbrowser.open(path.resolve().as_uri())
+        rep.note("브라우저에서 화면을 열었다. 위쪽 [셀러 화면 | 고객 안내 화면] 버튼과 단말 탭을 눌러 보세요")
+    rep.pause()
+
+
+# ─────────────────────────────────────────────────────────────── 장면 10
+def resolve_nlq(ctx, p: dict) -> tuple[dict, list[str]]:
+    """AI가 옮긴 조건을 코드가 해석한다: 요금제 표기 → 요금제 ID, 금액 표기 → 원, 가입유형 → 조건 키."""
+    notes, out = [], {k: p.get(k) for k in ("partner", "category", "field", "op", "direction")}
+    out["plan_id"] = None
+    if p.get("plan_phrase"):
+        try:
+            out["plan_id"] = ctx.plans.resolve(p.get("partner"), p["plan_phrase"]) or None
+            notes.append(f"요금제 '{p['plan_phrase']}' → {out['plan_id']}")
+        except UnknownCondition:
+            notes.append(f"요금제 '{p['plan_phrase']}' → 사전에 없음(조건에서 뺌)")
+    out["condition_key"] = JOIN_KEYS.get(p.get("join"))
+    out["amount"] = parse_krw(p["amount_text"], gae=True) if p.get("amount_text") else None
+    if p.get("amount_text"):
+        notes.append(f"금액 '{p['amount_text']}' → {_won(out['amount'])}원" if out["amount"] is not None
+                     else f"금액 '{p['amount_text']}' → 해석 불가(조건에서 뺌)")
+    return out, notes
+
+
+def scene10_nlq(ctx: Ctx):
     rep, st, llm = ctx.rep, ctx.store, ctx.llm
-    rep.scene(7, "자연어 조회 (AI 기능 ④ 자연어처리)",
+    rep.scene(10, "자연어 조회 (AI 기능 ④ 자연어처리)",
               "관리자의 질문을 '정해진 조회 종류 + 조건'으로 바꾸기만 한다. SQL을 쓰지 않고 숫자를 만들지 않는다. "
-              "표의 숫자는 DB에서 나온다.")
+              "요금제·금액 표기의 해석과 표의 숫자는 코드와 DB가 만든다.")
     ok_n = 0
     for i, q in enumerate(ctx.key["nlq"], 1):
         rep.say("사람", f"질문 {i}: “{q['question']}”")
         ai = nlq_parse.run(llm, f"q{i}_nlq", q["question"], MONTH, PREV_MONTH)
         rep.json("🤖 AI 응답 — 조회 종류 + 조건", ai)
-        p = ai["params"]
+        p, notes = resolve_nlq(ctx, ai["params"])
+        if notes:
+            rep.say("코드", "사전으로 해석: " + " / ".join(notes))
         ok = ai["intent"] == q["intent"] and all(p.get(k) == v for k, v in q["params"].items())
         ok_n += ok
         rep.say("정답", f"조회 조건 {'일치' if ok else '불일치'}")
         with st.role("nlq_reader"):
             if ai["intent"] == "price_lookup":
-                rows = queries.price_lookup(st, MONTH, p["partner"], p["category"], p["field"], p["condition"], p["op"], p["amount"])
+                rows = queries.price_lookup(st, MONTH, p["partner"], p["category"], p["field"], p["plan_id"],
+                                            p["condition_key"], p["op"], p["amount"])
                 rep.say("코드", "고정 조회 함수 price_lookup 실행 (SQL은 미리 작성된 것, 조건은 바인딩 값)")
-                rep.table("조회 결과 (숫자는 DB 확정값)", ["파트너", "상품", "항목", "조건", "값(원)", "확정 월"],
-                          [[r["partner"], r["name"], FIELD_KO[r["field_code"]], CONDITION_LABELS[r["condition_key"]],
+                rep.table("조회 결과 (숫자는 DB 확정값)", ["파트너", "상품", "항목", "요금제·조건", "값(원)", "확정 월"],
+                          [[r["partner"], r["name"], FIELD_KO[r["field_code"]],
+                            label(ctx.plans, r["partner"], r["plan_id"], r["condition_key"]),
                             _won(r["value_int"]), r["month"]] for r in rows])
             elif ai["intent"] == "price_change_list":
                 rows = queries.price_change_list(st, MONTH, PREV_MONTH, p["category"], p["field"], p["direction"])
                 rep.say("코드", "고정 조회 함수 price_change_list 실행")
-                rep.table("조회 결과 (숫자는 DB 확정값)", ["파트너", "상품", "항목", "지난달", "이번 달"],
-                          [[r["partner"], r["name"], FIELD_KO[r["field_code"]], _won(r["prev_value"]), _won(r["new_value"])]
-                           for r in rows])
+                rep.table("조회 결과 (숫자는 DB 확정값)", ["파트너", "상품", "항목", "요금제·조건", "지난달", "이번 달"],
+                          [[r["partner"], r["name"], FIELD_KO[r["field_code"]],
+                            label(ctx.plans, r["partner"], r["plan_id"], r["condition_key"]),
+                            _won(r["prev_value"]), _won(r["new_value"])] for r in rows])
             elif ai["intent"] == "unmatched_products":
                 rows = queries.unmatched_products(st)
                 rep.table("조회 결과", ["파트너", "상품명", "모델코드", "상태"],
@@ -767,27 +1109,29 @@ def scene7_nlq(ctx: Ctx):
                             r["status"]] for r in rows])
             else:
                 rep.say("코드", f"지원하지 않는 질문 → 조회도 계산도 하지 않는다. AI가 적은 사유: {ai['unsupported_reason']}")
-                rep.note("정산·계산 금액은 계산 엔진(장면 6)의 결과 화면에서 확인한다. AI가 숫자를 만들지 않는다")
+                rep.note("정산·계산 금액은 계산 엔진(장면 8)의 결과 화면에서 확인한다. AI가 숫자를 만들지 않는다")
         rep.pause()
     ctx.metrics["④ 자연어처리(조회)"] = [ok_n, len(ctx.key["nlq"])]
-    ctx.summary.append(["④ 자연어처리(조회)", "질문 → 조회 종류 + enum 조건",
-                        "조회 조건(쓰기 없음)", "enum 검증·고정 조회 함수·읽기 전용 권한",
+    ctx.summary.append(["④ 자연어처리(조회)", "질문 → 조회 종류 + 조건(요금제·금액은 원문 표기)",
+                        "조회 조건(쓰기 없음)", "enum 검증·요금제/금액 사전·고정 조회 함수·읽기 전용 권한",
                         _acc(ctx, ok_n, len(ctx.key["nlq"])), "결과 확인"])
 
 
-# ─────────────────────────────────────────────────────────────── 장면 8
-def scene8_summary(ctx: Ctx):
+# ─────────────────────────────────────────────────────────────── 장면 11
+def scene11_summary(ctx: Ctx):
     rep, st, llm = ctx.rep, ctx.store, ctx.llm
-    rep.scene(8, "정리 — AI가 한 일과 하지 않은 일", "AI는 '제안'만 했다. 확정은 사람, 계산은 고정 공식이 했다.")
+    rep.scene(11, "정리 — AI가 한 일과 하지 않은 일", "AI는 '제안'만 했다. 확정은 사람, 계산은 고정 공식, 화면은 확정 데이터가 만들었다.")
     rep.table("AI가 한 일", ["기능", "AI가 한 일", "AI 결과가 간 곳", "코드 검증", "정답 대조", "사람"], ctx.summary)
     rep.table("AI가 하지 않은 일", ["하지 않은 일", "대신 누가"], [
         ["확정 DB(canonical)에 쓰기", "사람의 승인 함수 (DB 권한으로 강제)"],
-        ["금액·할인가·합계 계산", "계산 엔진의 고정 공식"],
+        ["양식이 고정된 전산(API·CSV) 읽기", "규칙 파서 (AI 호출 0회)"],
+        ["'55개' 같은 금액 표기 해석, 요금제·조건 코드 확정", "코드 사전"],
+        ["금액·할인가·월 납부액 계산", "계산 엔진의 고정 공식"],
         ["이상 여부·심각도 판정", "규칙 코드"],
-        ["조건 코드·날짜 해석", "조건 사전, 날짜 파서(코드)"],
+        ["정산 금액(리베이트) 변경 승인", "사람 (규칙상 자동 반영 불가)"],
+        ["요금 설계 화면의 숫자", "확정 DB + 계산 결과 (화면 역할은 staging 읽기 불가)"],
         ["SQL 작성", "미리 작성된 고정 조회 함수"],
         ["매칭 확정·신규 상품 등록", "사람"],
-        ["정산 금액(리베이트) 변경 승인", "사람 (규칙상 자동 반영 불가)"],
     ])
     calls = llm.calls
     tin = sum(c.input_tokens for c in calls)
@@ -806,6 +1150,15 @@ def scene8_summary(ctx: Ctx):
     n_can = st.one("select count(*) n from canonical_price where month=?", (MONTH,))["n"]
     n_ai = st.one("select count(*) n from canonical_price where month=? and source like '%AI 추출%'", (MONTH,))["n"]
     n_edit = st.one("select count(*) n from staging_record where human_edited=1")["n"]
+    n_manual = st.one("select count(*) n from canonical_price where month=? and source like '%사람 직접 입력%'", (MONTH,))["n"]
     n_ex = st.one("select count(*) n from staging_record where state='excluded'")["n"]
-    rep.say("DB", f"{MONTH} 확정 {n_can}건 (그중 AI 추출값 {n_ai}건, 사람이 고친 값 {n_edit}건), 제외 {n_ex}건")
-    ctx.facts = {"confirmed": n_can, "confirmed_from_ai": n_ai, "human_edited": n_edit, "excluded": n_ex}
+    rep.say("DB", f"{MONTH} 확정 {n_can}건 (그중 AI가 추출한 값 {n_ai}건, 사람이 고친 값 {n_edit}건, 사람이 직접 입력 {n_manual}건), "
+                  f"제외 {n_ex}건")
+    if ctx.screen_path:
+        rep.say("코드", f"요금 설계 화면: {ctx.screen_path.relative_to(ctx.root)}")
+    ctx.facts = {"confirmed": n_can, "confirmed_from_ai": n_ai, "human_edited": n_edit, "human_entered": n_manual,
+                 "excluded": n_ex, "screen": str(ctx.screen_path.relative_to(ctx.root)) if ctx.screen_path else None}
+
+
+SCENES = (scene0_setup, scene1_excel, scene2_kakao, scene3_fixed_feeds, scene4_pdf, scene5_matching,
+          scene6_anomaly, scene7_notice, scene8_confirm_and_calc, scene9_rate_screen, scene10_nlq, scene11_summary)
