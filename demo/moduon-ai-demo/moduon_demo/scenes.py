@@ -467,6 +467,27 @@ def scene3_matching(ctx: Ctx):
 
 # ─────────────────────────────────────────────────────────────── 장면 4
 _PLACEHOLDER = re.compile(r"\{(prev_value|new_value|change_pct)\}")
+DEFAULT_TEMPLATE = "이전 값 {prev_value}에서 {new_value}로 바뀌었습니다({change_pct})."
+
+
+def fill_template(tmpl: str, prev_v, new_v) -> tuple[str, str | None]:
+    """AI가 쓴 설명 틀에 코드가 숫자를 채운다. (완성 문장, 틀을 버린 이유 또는 None)
+
+    허용된 자리표시자 3개 밖에 숫자나 다른 중괄호({memo} 등)가 있으면 틀을 버리고 기본 문구를 쓴다."""
+    rest = _PLACEHOLDER.sub("", tmpl)
+    why = None
+    if not tmpl.strip():
+        why = "설명이 비어 있음"
+    elif m := re.search(r"\{[^{}]*\}", rest):
+        why = f"허용되지 않은 자리표시자 {m[0]}"
+    elif "{" in rest or "}" in rest:
+        why = "짝이 맞지 않는 중괄호"
+    elif m := re.search(r"\d+", rest):
+        why = f"자리표시자 밖의 숫자 '{m[0]}'"
+    pct = anomaly_rules.change_pct(prev_v, new_v)
+    vals = {"prev_value": f"{_won(prev_v)}원", "new_value": f"{_won(new_v)}원",
+            "change_pct": "-" if pct is None else f"{pct:+.1f}%"}
+    return _fix_particles(_PLACEHOLDER.sub(lambda x: vals[x[1]], DEFAULT_TEMPLATE if why else tmpl)), why
 
 
 def scene4_anomaly(ctx: Ctx):
@@ -525,18 +546,17 @@ def scene4_anomaly(ctx: Ctx):
     ai = anomaly_explain.run(llm, block, ids)
     rep.json("🤖 AI 응답 — 원인 분류 + 설명 틀", ai)
 
-    rep.say("코드", "검증: 설명 틀에 자리표시자 밖의 숫자가 있으면 버리고 기본 문구를 쓴다 → 숫자는 코드가 채운다")
+    rep.say("코드", "검증: 설명 틀에 허용된 자리표시자({prev_value}·{new_value}·{change_pct}) 밖의 숫자나 "
+                   "다른 자리표시자가 있으면 버리고 기본 문구를 쓴다 → 숫자는 코드가 채운다")
     by_id = {x["item_id"]: x for x in ai["items"]}
     out_rows = []
     with st.role("ingest_worker"):
         for iid, (r, prev_v, events) in zip(ids, flagged):
             x = by_id.get(iid)
-            tmpl = x["explanation_template_ko"] if x else ""
-            if not x or re.search(r"\d", _PLACEHOLDER.sub("", tmpl)):
-                tmpl = "이전 값 {prev_value}에서 {new_value}로 바뀌었습니다({change_pct})."
-            pct = anomaly_rules.change_pct(prev_v, r["value_int"])
-            text = _fix_particles(tmpl.format(prev_value=f"{_won(prev_v)}원", new_value=f"{_won(r['value_int'])}원",
-                                              change_pct="-" if pct is None else f"{pct:+.1f}%"))
+            text, why = fill_template(x["explanation_template_ko"] if x else "", prev_v, r["value_int"])
+            if why:
+                rep.note(f"{iid} {r['product_name']}: " + (f"AI 설명 틀 버림 — {why}" if x else "AI 응답에 이 항목이 없음")
+                         + " → 기본 문구 사용")
             cause = x["likely_cause"] if x else "unknown"
             st.exec("update staging_anomaly set ai_cause=?, ai_explanation=? where record_id=?", (cause, text[:200], r["id"]))
             out_rows.append([r["product_name"], ", ".join(f"{e['rule_code']}({e['severity']})" for e in events),

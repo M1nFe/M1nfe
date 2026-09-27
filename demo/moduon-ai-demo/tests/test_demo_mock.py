@@ -47,8 +47,8 @@ def test_full_demo_mock():
     assert st.one("select count(*) n from canonical_price where month='2026-10' and approved_by != '검수자(시뮬레이션)'")["n"] == 0
 
 
-def _run_until_matching(monkeypatch, overrides: dict):
-    """모의 모드로 장면 0~3을 돌리되, 일부 AI 응답을 주어진 출력으로 바꾼다."""
+def _run_until_matching(monkeypatch, overrides: dict, upto=scenes.scene3_matching):
+    """모의 모드로 장면 0~3(또는 upto까지)을 돌리되, 일부 AI 응답을 주어진 출력으로 바꾼다."""
     from moduon_demo.llm import LLM as _LLM
     orig = _LLM.run
 
@@ -61,8 +61,11 @@ def _run_until_matching(monkeypatch, overrides: dict):
     rep = Reporter(file=io.StringIO(), width=160)
     ctx = scenes.Ctx(root=ROOT, store=Store(), llm=LLM("mock", ROOT, rep), rep=rep,
                      key=json.loads((ROOT / "data/answer_key.json").read_text(encoding="utf-8")))
-    for s in (scenes.scene0_setup, scenes.scene1_excel, scenes.scene2_pdf, scenes.scene3_matching):
+    for s in (scenes.scene0_setup, scenes.scene1_excel, scenes.scene2_pdf, scenes.scene3_matching,
+              scenes.scene4_anomaly):
         s(ctx)
+        if s is upto:
+            break
     return ctx
 
 
@@ -90,3 +93,22 @@ def test_no_match_counts_as_new_product(monkeypatch):
             r["decision"] = "no_match"
     ctx = _run_until_matching(monkeypatch, {"m4_match_judge": m4})
     assert ctx.metrics["② 상품명 매칭"] == [6, 6]
+
+
+def test_unknown_placeholder_in_anomaly_template(monkeypatch):
+    """실제 qwen2.5:7b가 설명 틀에 {memo}를 쓴 경우(2026-09-27 리허설에서 KeyError로 중단) → 틀을 버리고 기본 문구."""
+    a3 = json.loads((ROOT / "mock_responses/a3_anomaly_explain.json").read_text(encoding="utf-8"))["output"]
+    a3["items"][1]["explanation_template_ko"] = "공시지원금이 {prev_value}에서 {new_value}로 줄었습니다. 비고: {memo}"
+    ctx = _run_until_matching(monkeypatch, {"a3_anomaly_explain": a3}, upto=scenes.scene4_anomaly)
+    row = ctx.store.one("select ai_explanation from staging_anomaly where rule_code='PRICE_JUMP'")
+    assert row["ai_explanation"] == "이전 값 350,000원에서 200,000원으로 바뀌었습니다(-42.9%)."
+    assert "허용되지 않은 자리표시자 {memo}" in "\n".join(ctx.rep.md)
+
+
+def test_fill_template_rules():
+    ok, why = scenes.fill_template("{prev_value}에서 {new_value}로 바뀜({change_pct})", 69000, 690000)
+    assert why is None and ok == "69,000원에서 690,000원으로 바뀜(+900.0%)"
+    for bad, reason in [("{memo} 확인", "{memo}"), ("{0}에서 바뀜", "{0}"), ("{prev_value 오타", "중괄호"),
+                        ("10배로 뛰었습니다", "'10'"), ("   ", "비어")]:
+        text, why = scenes.fill_template(bad, 69000, 690000)
+        assert reason in why and text == "이전 값 69,000원에서 690,000원으로 바뀌었습니다(+900.0%)."

@@ -56,6 +56,9 @@ def check(model: str, base_url: str | None = None) -> list[tuple[str, bool, str,
                     "" if not warns else "./run.sh rehearse"))
     except AIError:
         out.append(("리허설 녹화본", False, "없음", "./run.sh rehearse"))
+    except Exception as e:   # 녹화본은 있지만 재생 중 코드 오류 → 점검표에 보여 주고 끝까지 점검한다
+        out.append(("리허설 녹화본", False, f"재생 중 오류: {type(e).__name__}: {e}"[:80],
+                    "git pull 후 ./run.sh rehearse"))
 
     cols = shutil.get_terminal_size((80, 24)).columns
     out.append(("터미널 폭 100칸 이상", cols >= 100, f"현재 {cols}칸",
