@@ -23,7 +23,7 @@ textarea{width:100%;min-height:150px;font-family:ui-monospace,SFMono-Regular,Men
 .btn.big{padding:10px 18px;font-size:15px;font-weight:600}
 .btn[disabled]{opacity:.45;cursor:not-allowed}
 .layout{display:grid;grid-template-columns:210px 1fr;min-height:calc(100vh - 56px)}
-.side{border-right:1px solid var(--line);padding:14px 10px;display:flex;flex-direction:column;gap:4px;background:var(--card)}
+.side{border-right:1px solid var(--line);padding:14px 10px;display:flex;flex-direction:column;gap:4px;background:var(--card);position:sticky;top:57px;height:calc(100vh - 57px);overflow-y:auto}
 .side button{display:flex;align-items:center;gap:8px;border:0;background:none;padding:9px 10px;border-radius:8px;cursor:pointer;text-align:left}
 .side button:hover{background:var(--soft)}
 .side button.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
@@ -80,4 +80,4 @@ border-radius:12px;box-shadow:0 8px 30px rgba(0,0,0,.18);padding:12px 14px;z-ind
 .kpi div{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 12px}
 .kpi b{font-size:18px;display:block}
 @media (max-width:760px){.layout{grid-template-columns:1fr}.side{flex-direction:row;overflow-x:auto;border-right:0;border-bottom:1px solid var(--line)}
-.side button{white-space:nowrap}.legend{display:none}main{padding:14px 16px 80px}.job{left:12px;right:12px;width:auto}}
+.side{position:static;height:auto}.side button{white-space:nowrap}.legend{display:none}main{padding:14px 16px 80px}.job{left:12px;right:12px;width:auto}}
